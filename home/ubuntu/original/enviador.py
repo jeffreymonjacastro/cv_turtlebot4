@@ -18,16 +18,22 @@ class UdpTelemetryNode(Node):
 
         # ========= Parámetros =========
         self.declare_parameter("port", 6000)
-        self.declare_parameter("robot_name", "turtlebot4_lite_1")
-        self.declare_parameter("pairing_code", "ROBOT_A_22")  # debe coincidir con la PC
+        self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
+        self.declare_parameter("pairing_code", "ROBOT_A_2")  # debe coincidir con la PC
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
 
-        port         = self.get_parameter("port").get_parameter_value().integer_value
-        self.robot_name   = self.get_parameter("robot_name").get_parameter_value().string_value
-        self.pairing_code = self.get_parameter("pairing_code").get_parameter_value().string_value
-        scan_topic   = self.get_parameter("scan_topic").get_parameter_value().string_value
-        image_topic  = self.get_parameter("image_topic").get_parameter_value().string_value
+        port = self.get_parameter("port").get_parameter_value().integer_value
+        self.robot_name = (
+            self.get_parameter("robot_name").get_parameter_value().string_value
+        )
+        self.pairing_code = (
+            self.get_parameter("pairing_code").get_parameter_value().string_value
+        )
+        scan_topic = self.get_parameter("scan_topic").get_parameter_value().string_value
+        image_topic = (
+            self.get_parameter("image_topic").get_parameter_value().string_value
+        )
 
         # ========= ROS_DOMAIN_ID =========
         self.ros_domain_id = int(os.environ.get("ROS_DOMAIN_ID", "2"))
@@ -44,8 +50,12 @@ class UdpTelemetryNode(Node):
 
         # ========= Subscripciones =========
         self.bridge = CvBridge()
-        self.sub_scan = self.create_subscription(LaserScan, scan_topic, self.scan_callback, 10)
-        self.sub_img  = self.create_subscription(Image, image_topic, self.image_callback, 10)
+        self.sub_scan = self.create_subscription(
+            LaserScan, scan_topic, self.scan_callback, 10
+        )
+        self.sub_img = self.create_subscription(
+            Image, image_topic, self.image_callback, 10
+        )
 
         # ========= Hilo UDP (para HELLO / ACK) =========
         self.running = True
@@ -70,7 +80,9 @@ class UdpTelemetryNode(Node):
                     self.handle_hello(parts, addr)
                 else:
                     # ignoramos otros tipos aquí; telemetría solo usa HELLO/ACK
-                    self.get_logger().warn(f"Mensaje inesperado en telemetría desde {addr}: '{text}'")
+                    self.get_logger().warn(
+                        f"Mensaje inesperado en telemetría desde {addr}: '{text}'"
+                    )
 
             except Exception as e:
                 self.get_logger().error(f"Error en udp_loop: {e}")
@@ -90,7 +102,9 @@ class UdpTelemetryNode(Node):
         try:
             desired_domain = int(desired_domain_str)
         except ValueError:
-            self.get_logger().warn(f"HELLO con domain_id inválido desde {addr}: '{desired_domain_str}'")
+            self.get_logger().warn(
+                f"HELLO con domain_id inválido desde {addr}: '{desired_domain_str}'"
+            )
             return
 
         if pairing_code != self.pairing_code:
@@ -143,7 +157,9 @@ class UdpTelemetryNode(Node):
         try:
             self.sock.sendto(data, self.authorized_addr)
         except Exception as e:
-            self.get_logger().error(f"Error enviando SCAN a {self.authorized_addr}: {e}")
+            self.get_logger().error(
+                f"Error enviando SCAN a {self.authorized_addr}: {e}"
+            )
 
     def image_callback(self, msg: Image):
         if self.authorized_addr is None:
