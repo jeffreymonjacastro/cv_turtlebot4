@@ -9,7 +9,7 @@ ROBOT_PORT = 5007
 SEND_HZ = 60  # un poco más alto, igual tu receiver publica a 50Hz
 
 # Velocidades (sube si quieres, pero con cuidado)
-LIN = 0.80  # m/s  (rápido)
+LIN = 2.00  # m/s  (rápido) default: 0.80
 ANG = 3.00  # rad/s (rápido)
 
 

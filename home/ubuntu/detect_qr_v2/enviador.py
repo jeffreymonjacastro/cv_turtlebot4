@@ -14,9 +14,9 @@ import cv2
 
 class UdpTelemetryNode(Node):
     def __init__(self):
-        super().__init__("udp_telemetry")
+        super().__init__("udp_telemetry_v2")
 
-        # ========= Parámetros =========
+        # ========= Parametros =========
         self.declare_parameter("port", 6000)
         self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
         self.declare_parameter("pairing_code", "ROBOT_A_2")  # debe coincidir con la PC
@@ -42,14 +42,15 @@ class UdpTelemetryNode(Node):
         # ========= Socket UDP =========
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", port))
-        self.get_logger().info(f"Telemetría UDP escuchando en 0.0.0.0:{port}")
+        self.get_logger().info(f"Telemetria UDP escuchando en 0.0.0.0:{port}")
 
         # ========= Estado de emparejamiento =========
         self.authorized_addr = None  # (ip, puerto) de la PC emparejada
-        self.get_logger().info("Esperando HELLO para emparejar PC de telemetría...")
+        self.get_logger().info("Esperando HELLO para emparejar PC de telemetria...")
 
         # ========= Subscripciones =========
         self.bridge = CvBridge()
+
         self.sub_scan = self.create_subscription(
             LaserScan, scan_topic, self.scan_callback, 10
         )
@@ -64,7 +65,7 @@ class UdpTelemetryNode(Node):
 
     # ================== Hilo UDP (HELLO/ACK) ==================
     def udp_loop(self):
-        self.get_logger().info("Hilo UDP de telemetría iniciado.")
+        self.get_logger().info("Hilo UDP de telemetria iniciado.")
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(1024)
@@ -79,21 +80,20 @@ class UdpTelemetryNode(Node):
                 if cmd_type == "HELLO":
                     self.handle_hello(parts, addr)
                 else:
-                    # ignoramos otros tipos aquí; telemetría solo usa HELLO/ACK
                     self.get_logger().warn(
-                        f"Mensaje inesperado en telemetría desde {addr}: '{text}'"
+                        f"Mensaje inesperado en telemetria desde {addr}: '{text}'"
                     )
 
             except Exception as e:
                 self.get_logger().error(f"Error en udp_loop: {e}")
                 break
 
-        self.get_logger().info("Hilo UDP de telemetría finalizado.")
+        self.get_logger().info("Hilo UDP de telemetria finalizado.")
 
     def handle_hello(self, parts, addr):
         # Formato: HELLO <desired_domain_id> <pairing_code>
         if len(parts) < 3:
-            self.get_logger().warn(f"HELLO inválido desde {addr}: {parts}")
+            self.get_logger().warn(f"HELLO invalido desde {addr}: {parts}")
             return
 
         desired_domain_str = parts[1]
@@ -103,7 +103,7 @@ class UdpTelemetryNode(Node):
             desired_domain = int(desired_domain_str)
         except ValueError:
             self.get_logger().warn(
-                f"HELLO con domain_id inválido desde {addr}: '{desired_domain_str}'"
+                f"HELLO con domain_id invalido desde {addr}: '{desired_domain_str}'"
             )
             return
 
@@ -117,10 +117,9 @@ class UdpTelemetryNode(Node):
             )
             return
 
-        # Aceptar emparejamiento (una sola PC)
         if self.authorized_addr is None:
             self.authorized_addr = addr
-            self.get_logger().info(f"PC de telemetría emparejada: {addr}")
+            self.get_logger().info(f"PC de telemetria emparejada: {addr}")
         else:
             if addr != self.authorized_addr:
                 self.get_logger().warn(
@@ -128,18 +127,14 @@ class UdpTelemetryNode(Node):
                 )
                 return
 
-        # Responder ACK <domain_id> <robot_name>
         ack_msg = f"ACK {self.ros_domain_id} {self.robot_name}".encode("utf-8")
         self.sock.sendto(ack_msg, addr)
 
     # ================== Callbacks de sensores ==================
     def scan_callback(self, msg: LaserScan):
         if self.authorized_addr is None:
-            return  # aún no hay PC emparejada
+            return
 
-        # OJO: esto puede ser pesado si lo mandas a full rate; puedes muestrear
-        # Formato:
-        # SCAN <domain_id> <robot_name> <stamp_sec> <stamp_nsec> <angle_min> <angle_increment> <n> r1 r2 ... rn
         ranges = list(msg.ranges)
         n = len(ranges)
 
@@ -148,11 +143,9 @@ class UdpTelemetryNode(Node):
             f"{msg.header.stamp.sec} {msg.header.stamp.nanosec} "
             f"{msg.angle_min} {msg.angle_increment} {n}"
         )
-        # Convertir lista de floats a texto
         ranges_str = " ".join(f"{r:.3f}" for r in ranges)
 
-        text = f"{header} {ranges_str}"
-        data = text.encode("utf-8")
+        data = f"{header} {ranges_str}".encode("utf-8")
 
         try:
             self.sock.sendto(data, self.authorized_addr)
@@ -166,22 +159,19 @@ class UdpTelemetryNode(Node):
             return
 
         try:
-            # Convertir a OpenCV y codificar a JPEG
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+
             ok, jpeg = cv2.imencode(".jpg", cv_img)
             if not ok:
                 return
 
             b64 = base64.b64encode(jpeg.tobytes()).decode("ascii")
 
-            # Formato:
-            # IMG <domain_id> <robot_name> <stamp_sec> <stamp_nsec> <base64_jpeg>
             header = (
                 f"IMG {self.ros_domain_id} {self.robot_name} "
                 f"{msg.header.stamp.sec} {msg.header.stamp.nanosec}"
             )
-            text = f"{header} {b64}"
-            data = text.encode("utf-8")
+            data = f"{header} {b64}".encode("utf-8")
 
             self.sock.sendto(data, self.authorized_addr)
 
