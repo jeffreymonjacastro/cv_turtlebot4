@@ -62,8 +62,13 @@ Las configuraciones deben coincidir tanto en el 🐢 como en la 💻 para que pu
 - 3ra terminal 🐢:
   - Ejecutar recibidor.py
 - 4ta terminal 💻:
-  - Ejecutar controller_template.py
-- 5ta terminal 💻:
   - Ejecutar recibidor_datos.py
+- 5ta terminal 💻:
+  - Ejecutar controller_template.py
+  - Mover el 🐢 con WASD, Q para detenerse
 
-> ⚠️: Si no funciona algo llamar a Cortijo
+Asi debería verse
+![terminal](info/terminal.png)
+
+> ⚠️: Si no funciona algo reiniciar el 🐢
+> Si no funcinoa reiniciar, llamar a Cortijo
