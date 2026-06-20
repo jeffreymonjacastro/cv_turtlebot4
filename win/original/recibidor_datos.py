@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 # ========= Configuración =========
-ROBOT_IP = "192.168.0.103"  # IP del TurtleBot4
+ROBOT_IP = "192.168.0.108"  # IP del TurtleBot4
 ROBOT_PORT = 6000  # Debe coincidir con el nodo de telemetría
 
 DESIRED_DOMAIN_ID = 2  # Debe coincidir con ROS_DOMAIN_ID del robot
