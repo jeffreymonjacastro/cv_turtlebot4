@@ -1,0 +1,20 @@
+{
+  "top1": 1.0,
+  "top5": 1.0,
+  "fitness": 1.0,
+  "save_dir": "/kaggle/working/runs/yolo26n_cls_v1",
+  "best_checkpoint": "best.pt",
+  "last_checkpoint": "last.pt",
+  "split_counts": {
+    "train": {
+      "left-arrow": 142,
+      "right-arrow": 118,
+      "stop-signal": 156
+    },
+    "val": {
+      "left-arrow": 35,
+      "right-arrow": 30,
+      "stop-signal": 39
+    }
+  }
+}

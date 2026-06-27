@@ -1,0 +1,67 @@
+{
+  "status": "complete",
+  "stage": "done",
+  "dataset": "jeffreyamc/yolo-signals-input",
+  "model": "yolo26n-cls.pt",
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal"
+  ],
+  "artifacts": [
+    "best.pt",
+    "last.pt",
+    "metrics.json",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "results.png",
+    "val_batch1_pred.jpg",
+    "val_batch0_pred.jpg",
+    "train_batch0.jpg",
+    "val_batch1_labels.jpg",
+    "train_batch2.jpg",
+    "train_batch1.jpg",
+    "val_batch0_labels.jpg",
+    "results.csv",
+    "args.yaml"
+  ],
+  "data_root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-input",
+  "source_counts": {
+    "left-arrow": 177,
+    "right-arrow": 148,
+    "stop-signal": 195
+  },
+  "prepared_root": "/kaggle/working/yolo_signals_cls",
+  "split_counts": {
+    "train": {
+      "left-arrow": 142,
+      "right-arrow": 118,
+      "stop-signal": 156
+    },
+    "val": {
+      "left-arrow": 35,
+      "right-arrow": 30,
+      "stop-signal": 39
+    }
+  },
+  "metrics": {
+    "top1": 1.0,
+    "top5": 1.0,
+    "fitness": 1.0,
+    "save_dir": "/kaggle/working/runs/yolo26n_cls_v1",
+    "best_checkpoint": "best.pt",
+    "last_checkpoint": "last.pt",
+    "split_counts": {
+      "train": {
+        "left-arrow": 142,
+        "right-arrow": 118,
+        "stop-signal": 156
+      },
+      "val": {
+        "left-arrow": 35,
+        "right-arrow": 30,
+        "stop-signal": 39
+      }
+    }
+  }
+}
