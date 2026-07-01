@@ -3,7 +3,7 @@ import struct
 import time
 import msvcrt
 
-ROBOT_IP = "10.73.201.100"
+ROBOT_IP = "172.27.129.200"
 ROBOT_PORT = 5007
 
 SEND_HZ = 60  # un poco más alto, igual tu receiver publica a 50Hz

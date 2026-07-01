@@ -1,0 +1,13 @@
+image,class,gt_area_ratio,pred_class,pred_conf,pred_iou_vs_pseudo_gt
+stop-signal_frame_000149.jpg,stop-signal,0.172224,stop-signal,0.9016910791397095,0.7195187165775401
+left-arrow_frame_000158.jpg,left-arrow,0.6624,,0.0,0.0
+left-arrow_frame_000169.jpg,left-arrow,0.09216,left-arrow,0.65611732006073,0.9329446064139941
+stop-signal_frame_000196.jpg,stop-signal,0.206016,stop-signal,0.9826323986053467,0.9742736077481841
+right-arrow_frame_000170.jpg,right-arrow,0.222768,right-arrow,0.9860808849334717,0.9669421487603306
+left-arrow_frame_000230.jpg,left-arrow,0.096096,,0.0,0.0
+left-arrow_frame_000066.jpg,left-arrow,0.002048,left-arrow,0.5782925486564636,0.7901234567901234
+left-arrow_frame_000235.jpg,left-arrow,0.003136,left-arrow,0.8817972540855408,0.9333333333333333
+left-arrow_frame_000003.jpg,left-arrow,0.096096,left-arrow,0.8909749984741211,0.9067028985507246
+stop-signal_frame_000211.jpg,stop-signal,0.06608,,0.0,0.0
+stop-signal_frame_000140.jpg,stop-signal,0.172224,stop-signal,0.8611966371536255,0.8396825396825397
+left-arrow_frame_000058.jpg,left-arrow,0.096096,left-arrow,0.6597799062728882,0.8197600564573042

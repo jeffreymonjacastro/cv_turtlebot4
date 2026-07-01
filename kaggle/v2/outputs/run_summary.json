@@ -1,0 +1,120 @@
+{
+  "status": "complete",
+  "stage": "done",
+  "dataset": "jeffreyamc/yolo-signals-input",
+  "model": "yolo26n.pt",
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal"
+  ],
+  "artifacts": [
+    "pseudo_labels.csv",
+    "pseudo_label_stats.json",
+    "best.pt",
+    "last.pt",
+    "metrics.json",
+    "sample_predictions.csv",
+    "qualitative_grid.jpg",
+    "qualitative_predictions.zip",
+    "BoxR_curve.png",
+    "results.png",
+    "BoxF1_curve.png",
+    "confusion_matrix_normalized.png",
+    "BoxPR_curve.png",
+    "confusion_matrix.png",
+    "BoxP_curve.png",
+    "val_batch0_pred.jpg",
+    "val_batch0_labels.jpg",
+    "val_batch1_pred.jpg",
+    "train_batch1820.jpg",
+    "train_batch0.jpg",
+    "labels.jpg",
+    "train_batch2.jpg",
+    "val_batch2_pred.jpg",
+    "val_batch1_labels.jpg",
+    "train_batch1.jpg",
+    "val_batch2_labels.jpg",
+    "train_batch1822.jpg",
+    "train_batch1821.jpg",
+    "results.csv",
+    "args.yaml"
+  ],
+  "data_root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-input",
+  "source_counts": {
+    "left-arrow": 177,
+    "right-arrow": 148,
+    "stop-signal": 195
+  },
+  "pseudo_label_stats": {
+    "kept": 520,
+    "skipped": [],
+    "source_counts": {
+      "left-arrow": 177,
+      "right-arrow": 148,
+      "stop-signal": 195
+    },
+    "fallback_norm_xyxy": {
+      "left-arrow": [
+        0.336,
+        0.34199999999999997,
+        0.696,
+        0.6
+      ],
+      "right-arrow": [
+        0.492,
+        0.364,
+        0.68,
+        0.596
+      ],
+      "stop-signal": [
+        0.198,
+        0.348,
+        0.662,
+        0.71
+      ]
+    },
+    "by_class": {
+      "left-arrow": {
+        "count": 177,
+        "train": 142,
+        "val": 35,
+        "detected": 148,
+        "fallback_median": 29,
+        "area_ratio_min": 0.001584,
+        "area_ratio_mean": 0.14949920903954803,
+        "area_ratio_max": 0.932
+      },
+      "right-arrow": {
+        "count": 148,
+        "train": 118,
+        "val": 30,
+        "detected": 113,
+        "fallback_median": 35,
+        "area_ratio_min": 0.001344,
+        "area_ratio_mean": 0.11810702702702702,
+        "area_ratio_max": 0.579824
+      },
+      "stop-signal": {
+        "count": 195,
+        "train": 156,
+        "val": 39,
+        "detected": 136,
+        "fallback_median": 59,
+        "area_ratio_min": 0.00224,
+        "area_ratio_mean": 0.2103715282051282,
+        "area_ratio_max": 0.984
+      }
+    }
+  },
+  "metrics": {
+    "map50": 0.8565411452959927,
+    "map50_95": 0.7695463880285545,
+    "precision": 0.8763558103265908,
+    "recall": 0.785247935689659,
+    "fitness": 0.7695463880285545,
+    "save_dir": "/kaggle/working/runs/yolo26n_det_v2",
+    "best_checkpoint": "best.pt",
+    "last_checkpoint": "last.pt"
+  }
+}

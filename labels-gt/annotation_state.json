@@ -1,0 +1,10 @@
+{
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal"
+  ],
+  "total_images": 520,
+  "annotated": 438,
+  "skipped_this_run": 82
+}

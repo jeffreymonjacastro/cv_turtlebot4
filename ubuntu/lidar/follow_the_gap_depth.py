@@ -18,6 +18,7 @@ import numpy as np
 import cv2
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import TwistStamped
 from cv_bridge import CvBridge
@@ -51,7 +52,7 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("front_stop_distance", 0.50) # Stop and realign if wall closer than this (m)
         self.declare_parameter("minimum_gap_width", 0.50)  # Min traversable width for 40cm robot + margins (m)
         self.declare_parameter("hfov_deg", 69.0)       # OAK-D RGB-Depth Horizontal FOV
-        self.declare_parameter("show_debug", True)
+        self.declare_parameter("show_debug", False)
         self.declare_parameter("telemetry_port", 6000)
         self.declare_parameter("telemetry_hz", 5.0)
         self.declare_parameter("send_scan_array", True)
@@ -85,6 +86,9 @@ class FollowTheGapDepth(Node):
         self.min_gap_w = float(g("minimum_gap_width"))
         self.hfov = np.radians(float(g("hfov_deg")))
         self.show_debug = bool(g("show_debug"))
+        if self.show_debug and not os.environ.get("DISPLAY"):
+            self.get_logger().warn("show_debug=true but DISPLAY is not set; disabling OpenCV window.")
+            self.show_debug = False
         self.telemetry_period = 1.0 / max(float(g("telemetry_hz")), 0.1)
         self.send_scan_array = bool(g("send_scan_array"))
         self.scan_array_stride = max(int(g("scan_array_stride")), 1)
@@ -111,18 +115,22 @@ class FollowTheGapDepth(Node):
         self.prev_time = time.time()
         self.fps = 0.0
         self.last_target_angle = 0.0  # For steering temporal smoothing
+        self.last_depth_msg_time = None
 
         # ---- Subscriber & Publisher ----
         self.sub_depth = self.create_subscription(
-            Image, self.depth_topic, self.depth_callback, 10
+            Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data
         )
         self.pub_cmd = self.create_publisher(TwistStamped, self.cmd_topic, 10)
+        self.status_timer = self.create_timer(5.0, self._status_check)
 
         self.get_logger().info("Follow-the-Gap Stereo Depth Navigation Node Initialized.")
         self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
         self.get_logger().info(f"Publishing TwistStamped to: {self.cmd_topic}")
 
     def depth_callback(self, msg: Image):
+        self.last_depth_msg_time = time.monotonic()
+
         # Calculate Loop Frequency (FPS)
         now = time.time()
         dt = now - self.prev_time
@@ -489,6 +497,7 @@ class FollowTheGapDepth(Node):
             ack = f"ACK {self.ros_domain_id} {self.robot_name}".encode("utf-8")
             self.sock.sendto(ack, addr)
             self.get_logger().info(f"Depth telemetry paired with {addr}.")
+            self._send_log("INFO", f"paired addr={addr[0]}:{addr[1]} depth_topic={self.depth_topic} cmd_topic={self.cmd_topic}")
 
     def _send_telemetry_state(
         self,
@@ -538,9 +547,18 @@ class FollowTheGapDepth(Node):
         except OSError as e:
             self.get_logger().warn(f"Error sending telemetry: {e}")
 
+    def _send_log(self, level: str, message: str):
+        if self.authorized_addr is None:
+            return
+        fields = ["LOG", str(self.ros_domain_id), self.robot_name, level, message]
+        try:
+            self.sock.sendto(" ".join(fields).encode("utf-8"), self.authorized_addr)
+        except OSError as e:
+            self.get_logger().warn(f"Error sending UDP log: {e}")
+
     def _send_virtual_scan_array(self, stamp_sec, stamp_nsec, virtual_scan):
         # We reverse the order of virtual scan so the array starts from negative angle (right side)
-        # to match standard LaserScan format expected by scan array listeners
+        # to match the range-array format expected by telemetry listeners
         ranges = virtual_scan[::-1][::self.scan_array_stride]
         angle_min = -self.hfov / 2.0
         angle_increment = self.hfov / self.num_bins
@@ -557,6 +575,39 @@ class FollowTheGapDepth(Node):
         ]
         fields.extend(self._range_text(r) for r in ranges)
         self.sock.sendto(" ".join(fields).encode("utf-8"), self.authorized_addr)
+
+    def _status_check(self):
+        image_topics = [
+            name
+            for name, types in self.get_topic_names_and_types()
+            if name.startswith("/oakd") and "sensor_msgs/msg/Image" in types
+        ]
+        published_image_topics = [
+            f"{name}({len(self.get_publishers_info_by_topic(name))})"
+            for name in image_topics
+            if self.get_publishers_info_by_topic(name)
+        ]
+        depth_publishers = len(self.get_publishers_info_by_topic(self.depth_topic))
+
+        if self.last_depth_msg_time is None:
+            if depth_publishers == 0:
+                topic_state = "no_depth_publisher"
+            elif self.depth_topic in image_topics:
+                topic_state = "depth_publisher_no_frames"
+            else:
+                topic_state = "topic_not_visible"
+            msg = (
+                f"No depth frames received on {self.depth_topic}; "
+                f"state={topic_state}; depth_publishers={depth_publishers}; "
+                f"published_image_topics={','.join(published_image_topics) if published_image_topics else 'none'}"
+            )
+            self.get_logger().warn(msg)
+            self._send_log("WARN", msg)
+
+        if self.pub_cmd.get_subscription_count() == 0:
+            msg = f"No subscribers detected on {self.cmd_topic}; Create 3 will not receive velocity commands."
+            self.get_logger().warn(msg)
+            self._send_log("WARN", msg)
 
     @staticmethod
     def _range_text(value):

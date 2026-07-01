@@ -102,6 +102,16 @@ def handle_scan_array(parts):
     )
 
 
+def handle_log(parts):
+    if len(parts) < 5:
+        print(f"[LOG] Mensaje corto: {' '.join(parts)}")
+        return
+    robot_name = parts[2]
+    level = parts[3]
+    message = " ".join(parts[4:])
+    print(f"[ROBOT {level}] {robot_name}: {message}")
+
+
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     addr = robot_addr()
@@ -117,6 +127,8 @@ def main():
                 handle_lidar(parts)
             elif parts[0] == "SCAN_ARRAY":
                 handle_scan_array(parts)
+            elif parts[0] == "LOG":
+                handle_log(parts)
             elif parts[0] == "ACK":
                 continue
             else:
