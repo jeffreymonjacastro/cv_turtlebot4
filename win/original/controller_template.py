@@ -3,14 +3,14 @@ import struct
 import time
 import msvcrt
 
-ROBOT_IP = "192.168.0.108"
+ROBOT_IP = "10.73.201.100"
 ROBOT_PORT = 5007
 
 SEND_HZ = 60  # un poco más alto, igual tu receiver publica a 50Hz
 
 # Velocidades (sube si quieres, pero con cuidado)
-LIN = 0.50  # m/s  (rápido) default: 0.80
-ANG = 0.50  # rad/s (rápido)
+LIN = 1.0  # m/s  (rápido) default: 0.80
+ANG = 3.0  # rad/s (rápido)
 
 
 def pack_cmd(v, w):
