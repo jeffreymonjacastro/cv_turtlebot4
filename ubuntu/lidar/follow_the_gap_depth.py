@@ -10,6 +10,9 @@ Designed to simulate local planning and obstacle avoidance using a multi-criteri
 function and geometric gap-width estimation in meters.
 """
 
+import os
+import socket
+import threading
 import time
 import numpy as np
 import cv2
@@ -49,6 +52,12 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("minimum_gap_width", 0.50)  # Min traversable width for 40cm robot + margins (m)
         self.declare_parameter("hfov_deg", 69.0)       # OAK-D RGB-Depth Horizontal FOV
         self.declare_parameter("show_debug", True)
+        self.declare_parameter("telemetry_port", 6000)
+        self.declare_parameter("telemetry_hz", 5.0)
+        self.declare_parameter("send_scan_array", True)
+        self.declare_parameter("scan_array_stride", 1)
+        self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
+        self.declare_parameter("pairing_code", "ROBOT_A_2")
 
         # ---- Retrieve Parameters ----
         g = lambda n: self.get_parameter(n).value
@@ -76,6 +85,26 @@ class FollowTheGapDepth(Node):
         self.min_gap_w = float(g("minimum_gap_width"))
         self.hfov = np.radians(float(g("hfov_deg")))
         self.show_debug = bool(g("show_debug"))
+        self.telemetry_period = 1.0 / max(float(g("telemetry_hz")), 0.1)
+        self.send_scan_array = bool(g("send_scan_array"))
+        self.scan_array_stride = max(int(g("scan_array_stride")), 1)
+        self.robot_name = str(g("robot_name"))
+        self.pairing_code = str(g("pairing_code"))
+
+        # ---- UDP socket and thread ----
+        self.ros_domain_id = int(os.environ.get("ROS_DOMAIN_ID", "2"))
+        self.authorized_addr = None
+        self.last_telemetry = 0.0
+        self.running = True
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.bind(("0.0.0.0", int(g("telemetry_port"))))
+            self.sock.settimeout(0.2)
+            self.udp_thread = threading.Thread(target=self._udp_loop, daemon=True)
+            self.udp_thread.start()
+            self.get_logger().info(f"UDP Telemetry listening on port {int(g('telemetry_port'))}")
+        except Exception as e:
+            self.get_logger().error(f"Failed to bind UDP socket: {e}")
 
         # ---- CV Bridge and Internal State ----
         self.bridge = CvBridge()
@@ -169,6 +198,50 @@ class FollowTheGapDepth(Node):
             speed, yaw = 0.0, 0.0
 
         self.publish_cmd(speed, yaw)
+
+        # 8. Send UDP Telemetry
+        # We simulate LIDAR structure for compatibility with recibidor_datos.py
+        # Sectors: left (0:13), center (13:27), right (27:40)
+        left_clear = float(np.min(virtual_scan[0:13]))
+        front_clear = float(np.min(virtual_scan[13:27]))
+        right_clear = float(np.min(virtual_scan[27:40]))
+        
+        target_angle_deg = float(np.degrees(self.last_target_angle))
+        
+        gap_start_deg = None
+        gap_end_deg = None
+        if best_bin is not None:
+            # Find the gap containing the best bin
+            for s, e, _ in debug_gaps:
+                if s <= best_bin <= e:
+                    center_bin = (self.num_bins - 1) / 2.0
+                    gap_start_deg = float(np.degrees((center_bin - s) * (self.hfov / self.num_bins)))
+                    gap_end_deg = float(np.degrees((center_bin - e) * (self.hfov / self.num_bins)))
+                    break
+
+        state_str = "FORWARD"
+        if speed == 0.0:
+            if front_clearance < self.front_stop:
+                state_str = "FRONT_BLOCKED"
+            else:
+                state_str = "BLOCKED"
+
+        self._send_telemetry_state(
+            msg.header.stamp.sec,
+            msg.header.stamp.nanosec,
+            state_str,
+            front_clear,
+            left_clear,
+            right_clear,
+            d_min,
+            float(np.degrees((self.num_bins // 2 - nearest_idx) * (self.hfov / self.num_bins))),
+            gap_start_deg,
+            gap_end_deg,
+            target_angle_deg,
+            speed,
+            yaw,
+            virtual_scan
+        )
 
         # Debug Window visualization
         if self.show_debug:
@@ -394,6 +467,115 @@ class FollowTheGapDepth(Node):
 
         cv2.imshow("Follow The Gap Debug", depth_color)
         cv2.waitKey(1)
+
+    def _udp_loop(self):
+        while self.running:
+            try:
+                data, addr = self.sock.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            parts = data.decode("utf-8", errors="ignore").strip().split()
+            if len(parts) < 3 or parts[0] != "HELLO":
+                continue
+            try:
+                desired_domain = int(parts[1])
+            except ValueError:
+                continue
+            if desired_domain != self.ros_domain_id or parts[2] != self.pairing_code:
+                continue
+            self.authorized_addr = addr
+            ack = f"ACK {self.ros_domain_id} {self.robot_name}".encode("utf-8")
+            self.sock.sendto(ack, addr)
+            self.get_logger().info(f"Depth telemetry paired with {addr}.")
+
+    def _send_telemetry_state(
+        self,
+        stamp_sec,
+        stamp_nsec,
+        state,
+        front_clear,
+        left_clear,
+        right_clear,
+        nearest_dist,
+        nearest_angle,
+        gap_start,
+        gap_end,
+        target_angle,
+        speed,
+        yaw,
+        virtual_scan
+    ):
+        if self.authorized_addr is None:
+            return
+        now = time.monotonic()
+        if now - self.last_telemetry < self.telemetry_period:
+            return
+        self.last_telemetry = now
+        fields = [
+            "LIDAR",
+            str(self.ros_domain_id),
+            self.robot_name,
+            str(stamp_sec),
+            str(stamp_nsec),
+            state,
+            f"{front_clear:.3f}",
+            f"{left_clear:.3f}",
+            f"{right_clear:.3f}",
+            f"{nearest_dist:.3f}",
+            f"{nearest_angle:.1f}",
+            "nan" if gap_start is None else f"{gap_start:.1f}",
+            "nan" if gap_end is None else f"{gap_end:.1f}",
+            "nan" if target_angle is None else f"{target_angle:.1f}",
+            f"{speed:.3f}",
+            f"{yaw:.3f}",
+        ]
+        try:
+            self.sock.sendto(" ".join(fields).encode("utf-8"), self.authorized_addr)
+            if self.send_scan_array:
+                self._send_virtual_scan_array(stamp_sec, stamp_nsec, virtual_scan)
+        except OSError as e:
+            self.get_logger().warn(f"Error sending telemetry: {e}")
+
+    def _send_virtual_scan_array(self, stamp_sec, stamp_nsec, virtual_scan):
+        # We reverse the order of virtual scan so the array starts from negative angle (right side)
+        # to match standard LaserScan format expected by scan array listeners
+        ranges = virtual_scan[::-1][::self.scan_array_stride]
+        angle_min = -self.hfov / 2.0
+        angle_increment = self.hfov / self.num_bins
+        fields = [
+            "SCAN_ARRAY",
+            str(self.ros_domain_id),
+            self.robot_name,
+            str(stamp_sec),
+            str(stamp_nsec),
+            f"{angle_min:.6f}",
+            f"{angle_increment:.6f}",
+            str(self.scan_array_stride),
+            str(len(ranges)),
+        ]
+        fields.extend(self._range_text(r) for r in ranges)
+        self.sock.sendto(" ".join(fields).encode("utf-8"), self.authorized_addr)
+
+    @staticmethod
+    def _range_text(value):
+        value = float(value)
+        if np.isposinf(value):
+            return "inf"
+        if np.isneginf(value):
+            return "-inf"
+        if np.isnan(value):
+            return "nan"
+        return f"{value:.3f}"
+
+    def destroy_node(self):
+        self.running = False
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        super().destroy_node()
 
 
 def main(args=None):
