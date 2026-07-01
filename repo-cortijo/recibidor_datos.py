@@ -9,10 +9,9 @@ import cv2
 ROBOT_IP   = "172.27.129.200"  # IP del TurtleBot4
 ROBOT_PORT = 6000              # Debe coincidir con el nodo de telemetría
 
-DESIRED_DOMAIN_ID = 2          # Debe coincidir con ROS_DOMAIN_ID del robot
-PAIRING_CODE      = "ROBOT_koser"
-EXPECTED_ROBOT_NAME = "turtlebot4_netanyahu"  # por seguridad extra
-
+DESIRED_DOMAIN_ID = 2  # Debe coincidir con ROS_DOMAIN_ID del robot
+PAIRING_CODE = "ROBOT_A_2"
+EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"  # por seguridad extra
 
 def do_handshake(sock: socket.socket, robot_addr):
     sock.settimeout(1.0)
