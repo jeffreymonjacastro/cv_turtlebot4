@@ -115,14 +115,14 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("roi_bottom", 440)      # Bottom row of ROI
         self.declare_parameter("max_depth", 4.0)       # Maximum reliable depth (m)
         self.declare_parameter("min_depth", 0.4)       # Minimum depth (m)
-        self.declare_parameter("bubble_radius_min", 0.25) # Safe min bubble (m) — TurtleBot4 radius=0.17m
+        self.declare_parameter("bubble_radius_min", 0.32) # Safe min bubble (m) — TurtleBot4 radius=0.17m
         self.declare_parameter("bubble_radius_max", 1.20) # Max bubble for close/fast obstacles (m)
         self.declare_parameter("bubble_k", 0.10)       # Scaling factor for dynamic bubble
         self.declare_parameter("bubble_speed_factor", 0.20) # m of bubble per m/s of speed
-        self.declare_parameter("kp", 2.2)              # Proportional gain (higher for wider FOV bins)
-        self.declare_parameter("max_linear_speed", 0.15)  # m/s — conservative for indoor
-        self.declare_parameter("min_linear_speed", 0.03)  # m/s
-        self.declare_parameter("max_angular_speed", 1.0)  # rad/s
+        self.declare_parameter("kp", 1.4)              # Proportional gain (higher for wider FOV bins)
+        self.declare_parameter("max_linear_speed", 0.12)  # m/s — conservative for indoor
+        self.declare_parameter("min_linear_speed", 0.025)  # m/s
+        self.declare_parameter("max_angular_speed", 0.60)  # rad/s
         self.declare_parameter("distance_weight", 1.0) # alpha
         self.declare_parameter("gap_weight", 0.8)      # beta
         self.declare_parameter("steering_weight", 0.5)  # gamma
@@ -132,6 +132,8 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("median_kernel", 3)     # 1D median filter kernel size for bins
         self.declare_parameter("front_stop_distance", 0.55) # Camera frontal stop (m)
         self.declare_parameter("minimum_gap_width", 0.55)   # Min traversable gap width (m)
+        self.declare_parameter("minimum_gap_width_straight", 0.50)
+        self.declare_parameter("minimum_gap_width_turn", 0.75)
         self.declare_parameter("hfov_deg", 69.0)       # OAK-D stereo FOV (used only in stereo mode)
         self.declare_parameter("lidar_planning_fov_deg", 180.0) # LiDAR planning FOV (rgb_fallback/lidar_only)
         self.declare_parameter("show_debug", False)
@@ -159,11 +161,22 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("lidar_timeout", 1.0)
         self.declare_parameter("camera_timeout", 1.5)
         self.declare_parameter("stereo_check_interval", 10.0)
-        self.declare_parameter("lidar_front_stop", 0.35)     # m — TB4 radius 0.17m + 0.18m margin
-        self.declare_parameter("lidar_slow_distance", 0.80)  # m — start slowing earlier
+        self.declare_parameter("lidar_front_stop", 0.38)     # m — TB4 radius 0.17m + 0.21m margin
+        self.declare_parameter("lidar_slow_distance", 0.85)  # m — start slowing earlier
         self.declare_parameter("lidar_side_stop", 0.28)      # m — more lateral clearance
         self.declare_parameter("lidar_turn_stop", 0.30)      # m — lateral only; diagonal is 0.75x
         self.declare_parameter("front_sector_deg", 35.0)
+        self.declare_parameter("robot_width_m", 0.339)
+        self.declare_parameter("robot_length_m", 0.341)
+        self.declare_parameter("straight_side_margin", 0.07)
+        self.declare_parameter("turn_side_margin", 0.12)
+        self.declare_parameter("corridor_centering_gain", 0.45)
+        self.declare_parameter("corridor_mode_yaw_limit", 0.20)
+        self.declare_parameter("hard_turn_yaw_threshold", 0.35)
+        self.declare_parameter("narrow_corridor_speed", 0.055)
+        self.declare_parameter("min_corridor_width", 0.48)
+        self.declare_parameter("turn_required_clearance", 0.36)
+        self.declare_parameter("front_corner_clearance", 0.42)
 
         # ---- Retrieve Parameters ----
         g = lambda n: self.get_parameter(n).value
@@ -192,6 +205,8 @@ class FollowTheGapDepth(Node):
         self.med_kernel = int(g("median_kernel"))
         self.front_stop = float(g("front_stop_distance"))
         self.min_gap_w = float(g("minimum_gap_width"))
+        self.min_gap_w_straight = float(g("minimum_gap_width_straight"))
+        self.min_gap_w_turn = float(g("minimum_gap_width_turn"))
         self.hfov = np.radians(float(g("hfov_deg")))
         self.lidar_planning_fov = np.radians(float(g("lidar_planning_fov_deg")))
         self.show_debug = bool(g("show_debug"))
@@ -226,6 +241,26 @@ class FollowTheGapDepth(Node):
         self.lidar_side_stop = float(g("lidar_side_stop"))
         self.lidar_turn_stop = float(g("lidar_turn_stop"))
         self.front_sector_deg = float(g("front_sector_deg"))
+        self.robot_width_m = float(g("robot_width_m"))
+        self.robot_length_m = float(g("robot_length_m"))
+        self.robot_half_width = self.robot_width_m / 2.0
+        self.robot_corner_radius = float(
+            np.hypot(self.robot_width_m / 2.0, self.robot_length_m / 2.0)
+        )
+        self.straight_side_margin = float(g("straight_side_margin"))
+        self.turn_side_margin = float(g("turn_side_margin"))
+        self.corridor_centering_gain = float(g("corridor_centering_gain"))
+        self.corridor_mode_yaw_limit = float(g("corridor_mode_yaw_limit"))
+        self.hard_turn_yaw_threshold = float(g("hard_turn_yaw_threshold"))
+        self.narrow_corridor_speed = float(g("narrow_corridor_speed"))
+        self.min_corridor_width = float(g("min_corridor_width"))
+        self.turn_required_clearance = float(g("turn_required_clearance"))
+        self.front_corner_clearance = float(g("front_corner_clearance"))
+        self.side_hard_min = self.robot_half_width + self.straight_side_margin
+        self.side_turn_min = max(
+            self.turn_required_clearance,
+            self.robot_corner_radius + self.turn_side_margin,
+        )
 
         # Convenience: last commanded speed for speed-adaptive bubble
         self._last_speed = 0.0
@@ -383,14 +418,15 @@ class FollowTheGapDepth(Node):
 
         # --- Follow-the-Gap (paper-correct: widest gap, deepest point) ------
         scores, best_bin, debug_gaps = self.find_best_gap(
-            cleaned_scan, self.front_stop, self.min_gap_w, active_hfov
+            cleaned_scan, self.front_stop, self.min_gap_w_straight, active_hfov
         )
 
         if best_bin is not None:
             speed, yaw = self.compute_control(best_bin, cleaned_scan, active_hfov)
         else:
-            self.get_logger().warn(f"NO VALID GAP [{self.camera_mode}] - STOPPING")
-            speed, yaw = 0.0, 0.0
+            self.get_logger().warn(f"NO VALID GAP [{self.camera_mode}] - ROTATING TO SEARCH")
+            speed = 0.0
+            yaw = self.choose_open_turn_yaw(virtual_scan)
 
         # --- Frontal planner override ----------------------------------------
         mid = self.num_bins // 2
@@ -401,7 +437,9 @@ class FollowTheGapDepth(Node):
                 f"FRONT BLOCKED [{self.camera_mode}]: "
                 f"{front_clearance:.2f}m < {self.front_stop}m"
             )
-            speed, yaw = 0.0, 0.0
+            speed = 0.0
+            if abs(yaw) < 0.05:
+                yaw = self.choose_open_turn_yaw(virtual_scan)
 
         # --- Mandatory LiDAR safety layer -----------------------------------
         speed, yaw = self.apply_lidar_safety(speed, yaw)
@@ -448,6 +486,34 @@ class FollowTheGapDepth(Node):
                 debug_depth, virtual_scan, cleaned_scan,
                 best_bin, scores, debug_gaps, speed, yaw
             )
+
+    def choose_open_turn_yaw(self, virtual_scan: np.ndarray) -> float:
+        """
+        Choose a slow in-place turn toward the side with more free space.
+
+        Convention:
+          yaw positive = left
+          yaw negative = right
+        """
+        if virtual_scan is None or len(virtual_scan) == 0:
+            return 0.0
+
+        mid = len(virtual_scan) // 2
+        left_values = virtual_scan[:mid]
+        right_values = virtual_scan[mid:]
+
+        left_clear = float(np.nanmedian(left_values))
+        right_clear = float(np.nanmedian(right_values))
+
+        if not np.isfinite(left_clear) and not np.isfinite(right_clear):
+            return 0.0
+        if not np.isfinite(left_clear):
+            return -min(0.45, self.max_w * 0.45)
+        if not np.isfinite(right_clear):
+            return min(0.45, self.max_w * 0.45)
+
+        turn_dir = 1.0 if left_clear >= right_clear else -1.0
+        return float(turn_dir * min(0.45, self.max_w * 0.45))
 
     def preprocess_depth(self, cv_depth: np.ndarray) -> np.ndarray:
         """
@@ -540,34 +606,45 @@ class FollowTheGapDepth(Node):
                 gaps.append((s, i))
             i += 1
 
-        # Filter by minimum physical width
-        valid_gaps = []
+        # Filter by minimum physical width. Straight corridors can be narrower
+        # than turns because the TurtleBot4 sweeps its corners while rotating.
+        candidate_gaps = []
+        center_bin = (self.num_bins - 1) / 2.0
         for s, e in gaps:
             gap_width_m = sum(
                 2.0 * cleaned_scan[idx] * np.tan(active_hfov / (2.0 * self.num_bins))
                 for idx in range(s, e + 1)
             )
-            if gap_width_m >= min_gap_w:
-                valid_gaps.append((s, e, gap_width_m))
+            if gap_width_m < min_gap_w:
+                continue
 
-        if not valid_gaps:
+            gap_ranges = cleaned_scan[s: e + 1]
+            max_d = float(np.max(gap_ranges))
+            plateau_mask = gap_ranges >= max_d - 0.05
+            plateau_indices = np.where(plateau_mask)[0]
+            gap_center = len(gap_ranges) // 2
+            best_local = plateau_indices[np.argmin(np.abs(plateau_indices - gap_center))]
+            candidate_bin = s + int(best_local)
+            target_angle = abs((center_bin - candidate_bin) * (active_hfov / self.num_bins))
+            required_gap = (
+                self.min_gap_w_turn
+                if target_angle > self.hard_turn_yaw_threshold
+                else self.min_gap_w_straight
+            )
+            if gap_width_m >= required_gap:
+                candidate_gaps.append((s, e, gap_width_m, candidate_bin))
+
+        valid_gaps = [(s, e, w) for s, e, w, _ in candidate_gaps]
+        if not candidate_gaps:
             return scores, None, valid_gaps
 
-        # Select widest gap (most room to manoeuvre)
-        best_gap = max(valid_gaps, key=lambda g: g[2])
-        s, e, width_m = best_gap
-
-        # Within the best gap, choose the deepest plateau bin closest to
-        # the gap centre (FtG paper: steer toward the most open space).
-        gap_ranges = cleaned_scan[s: e + 1]
-        max_d = float(np.max(gap_ranges))
-        # All bins within 5cm of the deepest point form the plateau
-        plateau_mask = gap_ranges >= max_d - 0.05
-        plateau_indices = np.where(plateau_mask)[0]
-        # Among plateau bins, prefer the one closest to the gap centre
-        gap_center = len(gap_ranges) // 2
-        best_local = plateau_indices[np.argmin(np.abs(plateau_indices - gap_center))]
-        best_bin = s + int(best_local)
+        # Prefer going straight when a near-widest gap exists near the center.
+        widest = max(g[2] for g in candidate_gaps)
+        near_widest = [g for g in candidate_gaps if g[2] >= widest * 0.85]
+        s, e, width_m, best_bin = min(
+            near_widest,
+            key=lambda g: abs(g[3] - center_bin),
+        )
 
         # Populate scores for telemetry (1 = selected gap, 0.5 = other valid gaps)
         for gs, ge, _ in valid_gaps:
@@ -720,7 +797,7 @@ class FollowTheGapDepth(Node):
         """
         Mandatory LiDAR safety gate. Every (speed, yaw) command computed by
         the camera-based planner MUST pass through this function before
-        publish_cmd() is called. Can only reduce/zero speed or cancel a turn.
+        publish_cmd() is called.
 
         Sectors (degrees, 0 = forward, + = left, - = right):
           front       : -front_sector_deg .. +front_sector_deg
@@ -729,9 +806,9 @@ class FollowTheGapDepth(Node):
           left        :  70 .. 110
           right       : -110 .. -70
 
-        Escape: if both speed AND yaw end up at 0.0 (fully boxed in),
-        emit a slow reverse+yaw toward the more open side so the robot
-        can back out of the corner instead of freezing forever.
+        Narrow corridors are allowed only when the robot fits, the front is
+        clear, and the command is mostly straight. Turns require extra corner
+        clearance because the rectangular base sweeps more space while rotating.
         """
         # Layer 0: no LiDAR data -> full stop.
         if self.last_scan_ranges is None:
@@ -743,6 +820,7 @@ class FollowTheGapDepth(Node):
             return 0.0, 0.0
 
         front       = self.sector_min(-self.front_sector_deg, self.front_sector_deg)
+        front_center = self.sector_min(-12.0, 12.0)
         front_left  = self.sector_min(20.0, 80.0)
         front_right = self.sector_min(-80.0, -20.0)
         left        = self.sector_min(70.0, 110.0)
@@ -752,74 +830,147 @@ class FollowTheGapDepth(Node):
         safe_yaw   = yaw
 
         # --- Layer 1: Hard frontal stop -----------------------------------
-        # Wall directly ahead: zero linear speed, but still allow yaw so
-        # the robot can spin in place to escape. Only kill speed, not yaw.
-        if front <= self.lidar_front_stop:
+        if front_center <= self.front_stop or front <= self.lidar_front_stop:
             self.get_logger().warn(
-                f"[LIDAR SAFETY] FRONT STOP: {front:.2f}m <= {self.lidar_front_stop:.2f}m"
+                f"[LIDAR SAFETY] FRONT STOP: center={front_center:.2f}m "
+                f"wide={front:.2f}m"
             )
-            safe_speed = 0.0  # Stop forward motion but preserve turning
+            safe_speed = 0.0
+            if abs(safe_yaw) < 0.05:
+                left_clear = max(left, front_left)
+                right_clear = max(right, front_right)
+                safe_yaw = (1.0 if left_clear >= right_clear else -1.0) * min(0.35, self.max_w * 0.35)
 
         # --- Layer 2: Progressive frontal slowdown -------------------------
-        if front < self.lidar_slow_distance:
+        slow_front = min(front, front_center)
+        if slow_front < self.lidar_slow_distance:
             span = max(self.lidar_slow_distance - self.lidar_front_stop, 1e-3)
-            scale = float(np.clip((front - self.lidar_front_stop) / span, 0.0, 1.0))
+            scale = float(np.clip((slow_front - self.lidar_front_stop) / span, 0.0, 1.0))
             safe_speed = min(safe_speed, self.max_v * scale)
+            if front_center <= self.front_stop and abs(safe_yaw) < 0.05:
+                left_clear = max(left, front_left)
+                right_clear = max(right, front_right)
+                safe_yaw = (1.0 if left_clear >= right_clear else -1.0) * min(0.35, self.max_w * 0.35)
 
-        # --- Layer 3: Lateral wall hugging ---------------------------------
-        if left <= self.lidar_side_stop or right <= self.lidar_side_stop:
+        corridor_width = left + right
+        corridor_fits = corridor_width >= max(
+            self.min_corridor_width,
+            self.robot_width_m + 2.0 * self.straight_side_margin,
+        )
+        left_ok_for_straight = left > self.side_hard_min
+        right_ok_for_straight = right > self.side_hard_min
+        going_mostly_straight = abs(safe_yaw) < self.corridor_mode_yaw_limit
+        corridor_front_clear = front_center > self.front_stop and front > self.lidar_front_stop
+        narrow_corridor_ok = (
+            corridor_fits
+            and left_ok_for_straight
+            and right_ok_for_straight
+            and corridor_front_clear
+            and going_mostly_straight
+        )
+
+        # --- Layer 3: Narrow corridor handling -----------------------------
+        if narrow_corridor_ok:
+            safe_speed = min(safe_speed, self.narrow_corridor_speed)
+            center_error = left - right
+            safe_yaw += self.corridor_centering_gain * center_error
+            safe_yaw = float(np.clip(safe_yaw, -self.max_w * 0.45, self.max_w * 0.45))
+        elif left <= self.side_hard_min or right <= self.side_hard_min:
             self.get_logger().warn(
-                f"[LIDAR SAFETY] SIDE TOO CLOSE: left={left:.2f}m right={right:.2f}m "
-                f"<= {self.lidar_side_stop:.2f}m -> stopping advance"
+                f"[LIDAR SAFETY] SIDE TOO CLOSE FOR STRAIGHT: "
+                f"left={left:.2f}m right={right:.2f}m <= hard_min={self.side_hard_min:.2f}m"
             )
             safe_speed = 0.0
 
         # --- Layer 4: Block dangerous turns --------------------------------
-        # Use separate thresholds:
-        #   * lateral sector (left/right): strict -- never drive into a side wall
-        #   * diagonal sector (front_left/front_right): lenient -- only block if
-        #     the diagonal is dangerously close (half of lidar_turn_stop).
-        #     This prevents front-right wall proximity from blocking a left turn.
-        diag_threshold = self.lidar_turn_stop * 0.75  # more lenient than lateral
+        turning_hard = abs(safe_yaw) > self.hard_turn_yaw_threshold
+        near_wall_for_turn = min(left, right, front_left, front_right) < self.side_turn_min
+        if turning_hard and near_wall_for_turn:
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] HARD TURN NEAR WALL: left={left:.2f}m "
+                f"right={right:.2f}m front_left={front_left:.2f}m "
+                f"front_right={front_right:.2f}m < turn_min={self.side_turn_min:.2f}m"
+            )
+            safe_speed = 0.0
+
+        diag_threshold = max(self.front_corner_clearance, self.side_turn_min)
         if safe_yaw > 0.0:  # Turning left
-            left_lat_block  = left <= self.lidar_turn_stop
-            left_diag_block = front_left <= diag_threshold
+            if turning_hard:
+                left_lat_block = left < self.side_turn_min
+                left_diag_block = front_left < diag_threshold
+            else:
+                left_lat_block = left < self.side_hard_min
+                left_diag_block = front_left < self.lidar_front_stop
             if left_lat_block or left_diag_block:
                 self.get_logger().warn(
                     f"[LIDAR SAFETY] LEFT TURN BLOCKED: front_left={front_left:.2f}m "
-                    f"left={left:.2f}m <= turn_stop={self.lidar_turn_stop:.2f}m"
+                    f"left={left:.2f}m"
                 )
                 safe_yaw = 0.0
         if safe_yaw < 0.0:  # Turning right
-            right_lat_block  = right <= self.lidar_turn_stop
-            right_diag_block = front_right <= diag_threshold
+            if turning_hard:
+                right_lat_block = right < self.side_turn_min
+                right_diag_block = front_right < diag_threshold
+            else:
+                right_lat_block = right < self.side_hard_min
+                right_diag_block = front_right < self.lidar_front_stop
             if right_lat_block or right_diag_block:
                 self.get_logger().warn(
                     f"[LIDAR SAFETY] RIGHT TURN BLOCKED: front_right={front_right:.2f}m "
-                    f"right={right:.2f}m <= turn_stop={self.lidar_turn_stop:.2f}m"
+                    f"right={right:.2f}m"
                 )
                 safe_yaw = 0.0
 
-        # --- Layer 5: Escape maneuver (boxed-in recovery) ------------------
-        # If after all layers both speed and yaw are zero, the robot is stuck.
-        # Instead of freezing, slowly back up toward the more open side so it
-        # can recover without human intervention.
-        if safe_speed == 0.0 and safe_yaw == 0.0 and speed != 0.0:
-            # Determine which side is more open
-            left_clear  = max(left, front_left)
-            right_clear = max(right, front_right)
-            escape_dir  = 1.0 if left_clear >= right_clear else -1.0  # + = turn left
-            # Reverse slowly while turning toward the open side
-            escape_speed = -self.min_v * 0.8
-            escape_yaw   = escape_dir * self.max_w * 0.5
-            self.get_logger().warn(
-                f"[LIDAR SAFETY] ESCAPE: backing up + turning "
-                f"{'left' if escape_dir > 0 else 'right'} "
-                f"(left_clear={left_clear:.2f}m right_clear={right_clear:.2f}m)"
+        # --- Layer 5: In-place stuck recovery ------------------------------
+        blocked_or_stuck = (
+            safe_speed == 0.0
+            and safe_yaw == 0.0
+            and (
+                front_center <= self.front_stop
+                or front <= self.lidar_front_stop
+                or left <= self.side_hard_min
+                or right <= self.side_hard_min
+                or front_left <= self.front_corner_clearance
+                or front_right <= self.front_corner_clearance
             )
-            safe_speed, safe_yaw = escape_speed, escape_yaw
+        )
+        if blocked_or_stuck:
+            left_clear = max(left, front_left)
+            right_clear = max(right, front_right)
+            left_turn_ok = left >= self.side_hard_min and front_left >= self.lidar_front_stop
+            right_turn_ok = right >= self.side_hard_min and front_right >= self.lidar_front_stop
 
-        safe_speed = float(np.clip(safe_speed, -self.min_v, self.max_v))
+            if left_turn_ok and right_turn_ok:
+                escape_dir = 1.0 if left_clear >= right_clear else -1.0
+            elif left_turn_ok:
+                escape_dir = 1.0
+            elif right_turn_ok:
+                escape_dir = -1.0
+            else:
+                self.get_logger().warn(
+                    f"[LIDAR SAFETY] STUCK: no safe in-place turn "
+                    f"(left={left:.2f}m right={right:.2f}m "
+                    f"front_left={front_left:.2f}m front_right={front_right:.2f}m)"
+                )
+                escape_dir = 0.0
+
+            safe_speed = 0.0
+            safe_yaw = escape_dir * min(0.35, self.max_w * 0.35)
+            if escape_dir != 0.0:
+                self.get_logger().warn(
+                    f"[LIDAR SAFETY] STUCK RECOVERY: turning "
+                    f"{'left' if escape_dir > 0 else 'right'} "
+                    f"(left_clear={left_clear:.2f}m right_clear={right_clear:.2f}m)"
+                )
+
+        if (front_center <= self.front_stop or front <= self.lidar_front_stop) and safe_speed > 0.0:
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] FRONT VETO: refusing forward speed with "
+                f"center={front_center:.2f}m wide={front:.2f}m"
+            )
+            safe_speed = 0.0
+
+        safe_speed = float(np.clip(safe_speed, 0.0, self.max_v))
         safe_yaw   = float(np.clip(safe_yaw, -self.max_w, self.max_w))
         return safe_speed, safe_yaw
 
@@ -853,23 +1004,26 @@ class FollowTheGapDepth(Node):
         fov_angles = angles[mask]
         fov_ranges = ranges[mask]
 
-        # Clean invalid readings: treat them as max_depth (unknown = free)
+        # Clean invalid readings. NaN/-Inf are unsafe; +Inf means no return in range.
         fov_ranges = np.nan_to_num(
-            fov_ranges, nan=self.max_depth, posinf=self.max_depth, neginf=self.max_depth
+            fov_ranges,
+            nan=self.min_depth,
+            posinf=self.max_depth,
+            neginf=self.min_depth,
         )
         fov_ranges = np.clip(fov_ranges, self.min_depth, self.max_depth)
 
         # Map each ray to a bin.
-        # angle=−hfov_half → bin 0 (right edge)
-        # angle=0          → bin num_bins//2 (center)
-        # angle=+hfov_half → bin num_bins−1 (left edge)
+        # angle=+hfov_half -> bin 0           left
+        # angle=0          -> bin num_bins//2 center
+        # angle=-hfov_half -> bin num_bins-1  right
         virtual_scan = np.full(self.num_bins, self.max_depth, dtype=np.float32)
         if fov_angles.size == 0:
             return virtual_scan
 
         bin_width = active_hfov / self.num_bins
         bin_indices = np.clip(
-            ((fov_angles + hfov_half) / bin_width).astype(int),
+            ((hfov_half - fov_angles) / bin_width).astype(int),
             0, self.num_bins - 1,
         )
         for idx, r in zip(bin_indices, fov_ranges):

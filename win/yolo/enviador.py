@@ -14,10 +14,11 @@ from pathlib import Path
 
 import msvcrt
 
-ROBOT_IP = "192.168.0.103"
+ROBOT_IP = "172.27.129.200"
 ROBOT_PORT = 5007
 
 SEND_HZ = 30
+SIGNAL_READ_HZ = 10
 FORWARD_SPEED = 0.08
 TURN_ANGULAR_SPEED = 0.45
 TURN_ANGLE_DEGREES = 90
@@ -25,8 +26,10 @@ TURN_SECONDS = math.radians(TURN_ANGLE_DEGREES) / TURN_ANGULAR_SPEED
 STOP_SECONDS = 2.0
 ACTION_COOLDOWN_SECONDS = 1.0
 SIGNAL_STALE_SECONDS = 0.8
-ACTION_CONF_THRESHOLD = 0.50
-ACTION_MIN_AREA_RATIO = 0.08
+ACTION_CONF_THRESHOLD = 0.90
+ACTION_MIN_AREA_RATIO = 0.18
+ACTION_CENTER_X_MIN = 0.25
+ACTION_CENTER_X_MAX = 0.75
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LATEST_SIGNAL_PATH = REPO_ROOT / "output" / "signals" / "latest_signal.json"
@@ -61,6 +64,7 @@ def read_latest_signal():
 
     confidence = float(payload.get("confidence") or 0.0)
     area_ratio = float(payload.get("bbox_area_ratio") or 0.0)
+    center_x_ratio = float(payload.get("bbox_center_x_ratio") or 0.0)
     timestamp = float(payload.get("timestamp") or 0.0)
     actionable = bool(payload.get("actionable", False))
 
@@ -69,6 +73,8 @@ def read_latest_signal():
     if confidence < ACTION_CONF_THRESHOLD:
         return None
     if area_ratio < ACTION_MIN_AREA_RATIO:
+        return None
+    if not (ACTION_CENTER_X_MIN <= center_x_ratio <= ACTION_CENTER_X_MAX):
         return None
     if not actionable:
         return None
@@ -94,7 +100,11 @@ def print_status(mode, paused, last_signal):
         direction = last_signal.get("direction")
         conf = float(last_signal.get("confidence") or 0.0)
         area = float(last_signal.get("bbox_area_ratio") or 0.0)
-        print(f"\r[AUTO] {state} | senal={direction} conf={conf:.2f} area={area:.1%}       ", end="")
+        center_x = float(last_signal.get("bbox_center_x_ratio") or 0.0)
+        print(
+            f"\r[AUTO] {state} | senal={direction} conf={conf:.2f} area={area:.1%} cx={center_x:.2f}       ",
+            end="",
+        )
     else:
         print(f"\r[AUTO] {state} | sin senal accionable       ", end="")
 
@@ -104,6 +114,8 @@ def main():
     period = 1.0 / SEND_HZ
     last_send = 0.0
     last_print = 0.0
+    last_signal_read = 0.0
+    last_signal = None
 
     mode = None
     mode_until = 0.0
@@ -137,14 +149,20 @@ def main():
                     mode = None
                     mode_until = 0.0
                     send_stop(sock)
-                    print("\n[MANUAL] Pausa activada." if paused else "\n[MANUAL] Reanudando avance automatico.")
+                    print(
+                        "\n[MANUAL] Pausa activada."
+                        if paused
+                        else "\n[MANUAL] Reanudando avance automatico."
+                    )
                 elif key == "q":
                     send_stop(sock)
                     print("\n[MAIN] Saliendo (STOP enviado).")
                     return
 
             now = time.time()
-            last_signal = read_latest_signal()
+            if now - last_signal_read >= 1.0 / SIGNAL_READ_HZ:
+                last_signal = read_latest_signal()
+                last_signal_read = now
 
             if mode and now >= mode_until:
                 print(f"\n[AUTO] Accion terminada: {mode}.")
@@ -160,6 +178,7 @@ def main():
                     direction = last_signal["direction"]
                     conf = float(last_signal.get("confidence") or 0.0)
                     area = float(last_signal.get("bbox_area_ratio") or 0.0)
+                    center_x = float(last_signal.get("bbox_center_x_ratio") or 0.0)
                     if direction == "left":
                         mode = "turn_left"
                         mode_until = now + TURN_SECONDS
@@ -173,7 +192,7 @@ def main():
                     if mode:
                         print(
                             f"\n[AUTO] Accion por senal {direction}: {mode} "
-                            f"conf={conf:.2f} area={area:.1%}"
+                            f"conf={conf:.2f} area={area:.1%} cx={center_x:.2f}"
                         )
 
             if paused:

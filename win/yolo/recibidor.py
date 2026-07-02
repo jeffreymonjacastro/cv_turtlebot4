@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 # ========= Telemetria =========
-ROBOT_IP = "192.168.0.103"
+ROBOT_IP = "172.27.129.200"
 ROBOT_PORT = 6000
 
 DESIRED_DOMAIN_ID = 2
@@ -25,16 +25,23 @@ EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
 
 # ========= YOLO =========
 CONF_THRESHOLD = 0.30
-ACTION_CONF_THRESHOLD = 0.50
-ACTION_MIN_AREA_RATIO = 0.08
+ACTION_CONF_THRESHOLD = 0.90
+ACTION_MIN_AREA_RATIO = 0.18
+ACTION_CENTER_X_MIN = 0.25
+ACTION_CENTER_X_MAX = 0.75
 IMG_SIZE = 640
 SIGNAL_CHECK_EVERY_N_FRAMES = 1
 STABLE_SIGNAL_FRAMES = 2
+MIN_SIGNAL_WRITE_INTERVAL_SECONDS = 0.10
 SCAN_PRINT_INTERVAL_SECONDS = 1.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_CANDIDATES = [
-    Path(os.environ["YOLO_SIGNAL_MODEL"]) if os.environ.get("YOLO_SIGNAL_MODEL") else None,
+    (
+        Path(os.environ["YOLO_SIGNAL_MODEL"])
+        if os.environ.get("YOLO_SIGNAL_MODEL")
+        else None
+    ),
     REPO_ROOT / "models" / "signals" / "best.pt",
     REPO_ROOT / "kaggle" / "v3" / "outputs" / "best.pt",
 ]
@@ -51,6 +58,9 @@ _candidate_direction = "none"
 _candidate_count = 0
 _stable_direction = "none"
 _model = None
+_last_signal_write_time = 0.0
+_last_signal_signature = None
+_last_write_warning_time = 0.0
 
 
 def should_print_scan():
@@ -107,9 +117,65 @@ def signal_direction_from_name(name):
     return None
 
 
+def atomic_write_json(path, payload):
+    global _last_write_warning_time
+
+    text = json.dumps(payload, indent=2)
+    tmp_path = path.with_name(f"{path.stem}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+
+    for attempt in range(8):
+        try:
+            tmp_path.replace(path)
+            return True
+        except PermissionError:
+            time.sleep(0.005 * (attempt + 1))
+
+    # En Windows, el replace atomico falla si otro proceso esta leyendo el destino.
+    # El lector ignora JSON parcial, asi que este fallback evita romper el loop de imagenes.
+    for attempt in range(3):
+        try:
+            path.write_text(text, encoding="utf-8")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return True
+        except PermissionError:
+            time.sleep(0.01 * (attempt + 1))
+
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    now = time.monotonic()
+    if now - _last_write_warning_time >= 1.0:
+        print(f"[SIGNAL] Windows bloqueo {path}; se reintentara en el siguiente frame.")
+        _last_write_warning_time = now
+    return False
+
+
 def write_latest_signal(direction, confidence, source_frame_time, detection=None):
+    global _last_signal_signature, _last_signal_write_time
+
     SIGNAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     detection = detection or {}
+    monotonic_now = time.monotonic()
+    signature = (
+        direction,
+        round(float(confidence), 2),
+        tuple(detection.get("box") or []),
+        round(float(detection.get("area_ratio", 0.0)), 3),
+        round(float(detection.get("center_x_ratio", 0.0)), 3),
+        bool(detection.get("actionable", False)),
+    )
+    if (
+        signature == _last_signal_signature
+        and monotonic_now - _last_signal_write_time < MIN_SIGNAL_WRITE_INTERVAL_SECONDS
+    ):
+        return
+
     payload = {
         "direction": direction,
         "confidence": round(float(confidence), 4),
@@ -117,17 +183,20 @@ def write_latest_signal(direction, confidence, source_frame_time, detection=None
         "source_frame_time": source_frame_time,
         "bbox_xyxy": detection.get("box"),
         "bbox_area_ratio": round(float(detection.get("area_ratio", 0.0)), 5),
+        "bbox_center_x_ratio": round(float(detection.get("center_x_ratio", 0.0)), 5),
         "actionable": bool(detection.get("actionable", False)),
         "class_name": detection.get("name"),
         "thresholds": {
             "action_confidence": ACTION_CONF_THRESHOLD,
             "action_min_area_ratio": ACTION_MIN_AREA_RATIO,
+            "action_center_x_min": ACTION_CENTER_X_MIN,
+            "action_center_x_max": ACTION_CENTER_X_MAX,
             "stable_frames": STABLE_SIGNAL_FRAMES,
         },
     }
-    tmp_path = LATEST_SIGNAL_PATH.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp_path.replace(LATEST_SIGNAL_PATH)
+    if atomic_write_json(LATEST_SIGNAL_PATH, payload):
+        _last_signal_signature = signature
+        _last_signal_write_time = monotonic_now
 
 
 def update_stable_signal(detection, source_frame_time):
@@ -185,9 +254,10 @@ def draw_detection(img, detection):
     direction = detection["direction"]
     confidence = detection["confidence"]
     area_ratio = detection["area_ratio"]
+    center_x_ratio = detection["center_x_ratio"]
     actionable = detection["actionable"]
     color = detection_color(direction)
-    label = f"{direction} {confidence:.2f} area={area_ratio:.2%}"
+    label = f"{direction} {confidence:.2f} area={area_ratio:.1%} cx={center_x_ratio:.2f}"
     if actionable:
         label += " ACTION"
 
@@ -211,7 +281,9 @@ def draw_status(img):
     else:
         text = f"Estado estable: {_stable_direction}"
         color = detection_color(_stable_direction)
-    cv2.putText(img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+    cv2.putText(
+        img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
+    )
 
 
 def detect_signal(img):
@@ -255,7 +327,12 @@ def detect_signal(img):
         x1, x2 = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
         y1, y2 = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
         area_ratio = max(0, x2 - x1) * max(0, y2 - y1) / max(1, w * h)
-        actionable = float(conf) >= ACTION_CONF_THRESHOLD and area_ratio >= ACTION_MIN_AREA_RATIO
+        center_x_ratio = ((x1 + x2) / 2.0) / max(1, w)
+        actionable = (
+            float(conf) >= ACTION_CONF_THRESHOLD
+            and area_ratio >= ACTION_MIN_AREA_RATIO
+            and ACTION_CENTER_X_MIN <= center_x_ratio <= ACTION_CENTER_X_MAX
+        )
 
         candidate = {
             "direction": direction,
@@ -263,6 +340,7 @@ def detect_signal(img):
             "name": name,
             "box": [x1, y1, x2, y2],
             "area_ratio": float(area_ratio),
+            "center_x_ratio": float(center_x_ratio),
             "actionable": actionable,
         }
         if best is None or candidate["confidence"] > best["confidence"]:
@@ -297,7 +375,9 @@ def do_handshake(sock, robot_addr):
                 if robot_name != EXPECTED_ROBOT_NAME:
                     print("[HANDSHAKE] robot_name no coincide. Reintentando...")
                     continue
-                print(f"[HANDSHAKE] Emparejado con '{robot_name}' (domain {domain_id}).")
+                print(
+                    f"[HANDSHAKE] Emparejado con '{robot_name}' (domain {domain_id})."
+                )
                 sock.settimeout(None)
                 return
 
@@ -386,6 +466,7 @@ def main():
     print(
         "[MAIN] Para accionar: "
         f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
+        f"centro_x={ACTION_CENTER_X_MIN:.2f}-{ACTION_CENTER_X_MAX:.2f}, "
         f"estable {STABLE_SIGNAL_FRAMES} frames."
     )
     try:
