@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # ============================================================
 #  SCRIPT DE LAPTOP (Windows) - NO ejecutar en el TurtleBot
-#  - Recibe SCAN / IMG desde home/ubuntu/signals/enviador.py
-#  - Detecta senales de giro con un modelo YOLO custom
-#  - Escribe output/signals/latest_signal.json para win/signals/enviador.py
+#  - Recibe SCAN / IMG desde ubuntu/yolo/enviador.py
+#  - Carga un YOLO detect custom y dibuja bounding boxes en vivo
+#  - Escribe output/signals/latest_signal.json para win/yolo/enviador.py
 # ============================================================
 import base64
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# ========= Configuracion =========
+# ========= Telemetria =========
 ROBOT_IP = "192.168.0.103"
 ROBOT_PORT = 6000
 
@@ -22,19 +23,27 @@ DESIRED_DOMAIN_ID = 2
 PAIRING_CODE = "ROBOT_A_2"
 EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
 
-CONF_THRESHOLD = 0.65
+# ========= YOLO =========
+CONF_THRESHOLD = 0.30
+ACTION_CONF_THRESHOLD = 0.50
+ACTION_MIN_AREA_RATIO = 0.08
 IMG_SIZE = 640
-SIGNAL_CHECK_EVERY_N_FRAMES = 3
+SIGNAL_CHECK_EVERY_N_FRAMES = 1
 STABLE_SIGNAL_FRAMES = 2
 SCAN_PRINT_INTERVAL_SECONDS = 1.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODEL_PATH = REPO_ROOT / "models" / "signals" / "best.pt"
+MODEL_CANDIDATES = [
+    Path(os.environ["YOLO_SIGNAL_MODEL"]) if os.environ.get("YOLO_SIGNAL_MODEL") else None,
+    REPO_ROOT / "models" / "signals" / "best.pt",
+    REPO_ROOT / "kaggle" / "v3" / "outputs" / "best.pt",
+]
 SIGNAL_OUTPUT_DIR = REPO_ROOT / "output" / "signals"
 LATEST_SIGNAL_PATH = SIGNAL_OUTPUT_DIR / "latest_signal.json"
 
 LEFT_ALIASES = ("left", "izquierda")
 RIGHT_ALIASES = ("right", "derecha")
+STOP_ALIASES = ("stop", "alto", "detener")
 
 _last_scan_print = 0.0
 _signal_frame_counter = 0
@@ -54,10 +63,22 @@ def should_print_scan():
     return True
 
 
+def find_model_path():
+    for path in MODEL_CANDIDATES:
+        if path and path.exists():
+            return path
+    return None
+
+
 def load_signal_model():
-    if not MODEL_PATH.exists():
+    model_path = find_model_path()
+    if model_path is None:
         print("[YOLO] Modelo no encontrado.")
-        print(f"[YOLO] Coloca tu modelo entrenado en: {MODEL_PATH}")
+        print("[YOLO] Rutas probadas:")
+        for candidate in MODEL_CANDIDATES:
+            if candidate:
+                print(f"       - {candidate}")
+        print("[YOLO] Tambien puedes definir YOLO_SIGNAL_MODEL=C:\\ruta\\best.pt")
         print("[YOLO] La ventana de camara funcionara, pero no habra deteccion.")
         return None
 
@@ -69,8 +90,10 @@ def load_signal_model():
         print("[YOLO] La ventana de camara funcionara, pero no habra deteccion.")
         return None
 
-    print(f"[YOLO] Cargando modelo: {MODEL_PATH}")
-    return YOLO(str(MODEL_PATH))
+    print(f"[YOLO] Cargando modelo: {model_path}")
+    model = YOLO(str(model_path))
+    print(f"[YOLO] task={model.task} names={model.names}")
+    return model
 
 
 def signal_direction_from_name(name):
@@ -79,32 +102,47 @@ def signal_direction_from_name(name):
         return "left"
     if any(alias in normalized for alias in RIGHT_ALIASES):
         return "right"
+    if any(alias in normalized for alias in STOP_ALIASES):
+        return "stop"
     return None
 
 
-def write_latest_signal(direction, confidence, source_frame_time):
+def write_latest_signal(direction, confidence, source_frame_time, detection=None):
     SIGNAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    detection = detection or {}
     payload = {
         "direction": direction,
         "confidence": round(float(confidence), 4),
         "timestamp": time.time(),
         "source_frame_time": source_frame_time,
+        "bbox_xyxy": detection.get("box"),
+        "bbox_area_ratio": round(float(detection.get("area_ratio", 0.0)), 5),
+        "actionable": bool(detection.get("actionable", False)),
+        "class_name": detection.get("name"),
+        "thresholds": {
+            "action_confidence": ACTION_CONF_THRESHOLD,
+            "action_min_area_ratio": ACTION_MIN_AREA_RATIO,
+            "stable_frames": STABLE_SIGNAL_FRAMES,
+        },
     }
     tmp_path = LATEST_SIGNAL_PATH.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(LATEST_SIGNAL_PATH)
 
 
-def update_stable_signal(direction, confidence, source_frame_time):
+def update_stable_signal(detection, source_frame_time):
     global _candidate_direction, _candidate_count, _stable_direction
+
+    direction = detection["direction"] if detection else None
+    confidence = detection["confidence"] if detection else 0.0
 
     if direction is None:
         _candidate_direction = "none"
         _candidate_count = 0
         if _stable_direction != "none":
-            _stable_direction = "none"
-            write_latest_signal("none", 0.0, source_frame_time)
             print("[SIGNAL] Senal perdida. Estado: none")
+        _stable_direction = "none"
+        write_latest_signal("none", 0.0, source_frame_time)
         return
 
     if direction == _candidate_direction:
@@ -113,13 +151,30 @@ def update_stable_signal(direction, confidence, source_frame_time):
         _candidate_direction = direction
         _candidate_count = 1
 
-    if _candidate_count >= STABLE_SIGNAL_FRAMES and direction != _stable_direction:
-        _stable_direction = direction
-        write_latest_signal(direction, confidence, source_frame_time)
-        print(
-            f"[SIGNAL] Detectado estable: {direction} "
-            f"conf={confidence:.2f} frame_time={source_frame_time}"
-        )
+    stable_direction = direction if _candidate_count >= STABLE_SIGNAL_FRAMES else "none"
+    if stable_direction != _stable_direction:
+        _stable_direction = stable_direction
+        if stable_direction != "none":
+            print(
+                f"[SIGNAL] Estable: {stable_direction} "
+                f"conf={confidence:.2f} area={detection['area_ratio']:.3f} "
+                f"actionable={detection['actionable']} frame_time={source_frame_time}"
+            )
+
+    if stable_direction == "none":
+        write_latest_signal("none", 0.0, source_frame_time, detection)
+    else:
+        write_latest_signal(stable_direction, confidence, source_frame_time, detection)
+
+
+def detection_color(direction):
+    if direction == "left":
+        return (0, 200, 255)
+    if direction == "right":
+        return (0, 255, 0)
+    if direction == "stop":
+        return (0, 0, 255)
+    return (255, 255, 255)
 
 
 def draw_detection(img, detection):
@@ -129,8 +184,12 @@ def draw_detection(img, detection):
     x1, y1, x2, y2 = detection["box"]
     direction = detection["direction"]
     confidence = detection["confidence"]
-    color = (0, 200, 255) if direction == "left" else (0, 255, 0)
-    label = f"{direction} {confidence:.2f}"
+    area_ratio = detection["area_ratio"]
+    actionable = detection["actionable"]
+    color = detection_color(direction)
+    label = f"{direction} {confidence:.2f} area={area_ratio:.2%}"
+    if actionable:
+        label += " ACTION"
 
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
     cv2.putText(
@@ -138,17 +197,28 @@ def draw_detection(img, detection):
         label,
         (x1, max(20, y1 - 10)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.55,
         color,
         2,
         cv2.LINE_AA,
     )
 
 
+def draw_status(img):
+    if _stable_direction == "none":
+        text = "Estado: buscando senal | comando esperado: adelante"
+        color = (255, 255, 255)
+    else:
+        text = f"Estado estable: {_stable_direction}"
+        color = detection_color(_stable_direction)
+    cv2.putText(img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
+
 def detect_signal(img):
     if _model is None:
         return None
 
+    h, w = img.shape[:2]
     try:
         results = _model.predict(
             source=img,
@@ -180,14 +250,23 @@ def detect_signal(img):
         direction = signal_direction_from_name(name)
         if direction is None:
             continue
-        if best is None or float(conf) > best["confidence"]:
-            x1, y1, x2, y2 = [int(v) for v in box]
-            best = {
-                "direction": direction,
-                "confidence": float(conf),
-                "name": name,
-                "box": (x1, y1, x2, y2),
-            }
+
+        x1, y1, x2, y2 = [int(round(v)) for v in box]
+        x1, x2 = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
+        y1, y2 = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
+        area_ratio = max(0, x2 - x1) * max(0, y2 - y1) / max(1, w * h)
+        actionable = float(conf) >= ACTION_CONF_THRESHOLD and area_ratio >= ACTION_MIN_AREA_RATIO
+
+        candidate = {
+            "direction": direction,
+            "confidence": float(conf),
+            "name": name,
+            "box": [x1, y1, x2, y2],
+            "area_ratio": float(area_ratio),
+            "actionable": actionable,
+        }
+        if best is None or candidate["confidence"] > best["confidence"]:
+            best = candidate
 
     return best
 
@@ -218,9 +297,7 @@ def do_handshake(sock, robot_addr):
                 if robot_name != EXPECTED_ROBOT_NAME:
                     print("[HANDSHAKE] robot_name no coincide. Reintentando...")
                     continue
-                print(
-                    f"[HANDSHAKE] Emparejado con '{robot_name}' (domain {domain_id})."
-                )
+                print(f"[HANDSHAKE] Emparejado con '{robot_name}' (domain {domain_id}).")
                 sock.settimeout(None)
                 return
 
@@ -259,19 +336,13 @@ def process_signal_from_image(img, sec, nsec):
     _signal_frame_counter += 1
     source_frame_time = f"{sec}.{nsec:09d}"
     if _signal_frame_counter % SIGNAL_CHECK_EVERY_N_FRAMES != 0:
+        draw_status(img)
         return
 
     detection = detect_signal(img)
-    if detection is None:
-        update_stable_signal(None, 0.0, source_frame_time)
-        return
-
     draw_detection(img, detection)
-    update_stable_signal(
-        detection["direction"],
-        detection["confidence"],
-        source_frame_time,
-    )
+    update_stable_signal(detection, source_frame_time)
+    draw_status(img)
 
 
 def handle_img(parts):
@@ -293,7 +364,7 @@ def handle_img(parts):
 
         process_signal_from_image(img, sec, nsec)
 
-        cv2.imshow(f"Signals {robot_name} (domain {domain_id})", img)
+        cv2.imshow(f"YOLO signals {robot_name} (domain {domain_id})", img)
         cv2.waitKey(1)
     except Exception as e:
         print(f"[IMG] Error: {e}")
@@ -310,8 +381,13 @@ def main():
 
     do_handshake(sock, robot_addr)
 
-    print("[MAIN] Recibiendo telemetria de senales. Ctrl+C para salir.")
+    print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
     print(f"[MAIN] Estado compartido: {LATEST_SIGNAL_PATH}")
+    print(
+        "[MAIN] Para accionar: "
+        f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
+        f"estable {STABLE_SIGNAL_FRAMES} frames."
+    )
     try:
         while True:
             data, _addr = sock.recvfrom(65535)

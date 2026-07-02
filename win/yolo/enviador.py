@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # ============================================================
 #  SCRIPT DE LAPTOP (Windows)
-#  - Envia WASD manual a home/ubuntu/original/recibidor.py por UDP 5007
-#  - Lee output/signals/latest_signal.json
-#  - Si hay senal izquierda/derecha estable, ejecuta giro automatico
+#  - Envia comandos UDP a ubuntu/original/recibidor.py por puerto 5007
+#  - Lee output/signals/latest_signal.json escrito por win/yolo/recibidor.py
+#  - Por defecto avanza lento; si la bbox es grande, gira 90 grados o se detiene
 # ============================================================
 import json
+import math
 import socket
 import struct
 import time
@@ -16,15 +17,16 @@ import msvcrt
 ROBOT_IP = "192.168.0.103"
 ROBOT_PORT = 5007
 
-SEND_HZ = 60
-
-LIN = 2.00
-MANUAL_ANG = 3.00
-AUTO_TURN_ANG = 1.50
-TURN_SECONDS = 1.05
-SIGNAL_COOLDOWN_SECONDS = 3.0
-SIGNAL_STALE_SECONDS = 2.0
-CONF_THRESHOLD = 0.65
+SEND_HZ = 30
+FORWARD_SPEED = 0.08
+TURN_ANGULAR_SPEED = 0.45
+TURN_ANGLE_DEGREES = 90
+TURN_SECONDS = math.radians(TURN_ANGLE_DEGREES) / TURN_ANGULAR_SPEED
+STOP_SECONDS = 2.0
+ACTION_COOLDOWN_SECONDS = 1.0
+SIGNAL_STALE_SECONDS = 0.8
+ACTION_CONF_THRESHOLD = 0.50
+ACTION_MIN_AREA_RATIO = 0.08
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LATEST_SIGNAL_PATH = REPO_ROOT / "output" / "signals" / "latest_signal.json"
@@ -34,59 +36,91 @@ def pack_cmd(v, w):
     return struct.pack("ff", float(v), float(w))
 
 
+def send_cmd(sock, v, w):
+    sock.sendto(pack_cmd(v, w), (ROBOT_IP, ROBOT_PORT))
+
+
+def send_stop(sock):
+    send_cmd(sock, 0.0, 0.0)
+
+
 def read_latest_signal():
     if not LATEST_SIGNAL_PATH.exists():
         return None
 
     try:
         payload = json.loads(LATEST_SIGNAL_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, ValueError):
         return None
 
     direction = payload.get("direction")
-    confidence = float(payload.get("confidence") or 0.0)
-    timestamp = float(payload.get("timestamp") or 0.0)
-    if direction not in ("left", "right", "none"):
+    if direction not in ("left", "right", "stop", "none"):
         return None
     if direction == "none":
-        return payload
-    if confidence < CONF_THRESHOLD:
         return None
+
+    confidence = float(payload.get("confidence") or 0.0)
+    area_ratio = float(payload.get("bbox_area_ratio") or 0.0)
+    timestamp = float(payload.get("timestamp") or 0.0)
+    actionable = bool(payload.get("actionable", False))
+
     if time.time() - timestamp > SIGNAL_STALE_SECONDS:
         return None
+    if confidence < ACTION_CONF_THRESHOLD:
+        return None
+    if area_ratio < ACTION_MIN_AREA_RATIO:
+        return None
+    if not actionable:
+        return None
+
     return payload
 
 
 def signal_event_id(signal):
     if not signal:
         return None
-    direction = signal.get("direction")
-    if direction not in ("left", "right"):
-        return None
-    return f"{direction}:{signal.get('timestamp')}"
+    return f"{signal.get('direction')}:{signal.get('source_frame_time')}:{signal.get('timestamp')}"
 
 
-def send_stop(sock):
-    sock.sendto(pack_cmd(0.0, 0.0), (ROBOT_IP, ROBOT_PORT))
+def print_status(mode, paused, last_signal):
+    if paused:
+        state = "PAUSA"
+    elif mode:
+        state = mode
+    else:
+        state = f"adelante v={FORWARD_SPEED:.2f}"
+
+    if last_signal:
+        direction = last_signal.get("direction")
+        conf = float(last_signal.get("confidence") or 0.0)
+        area = float(last_signal.get("bbox_area_ratio") or 0.0)
+        print(f"\r[AUTO] {state} | senal={direction} conf={conf:.2f} area={area:.1%}       ", end="")
+    else:
+        print(f"\r[AUTO] {state} | sin senal accionable       ", end="")
 
 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    manual_v = 0.0
-    manual_w = 0.0
-    auto_direction = None
-    auto_until = 0.0
-    last_auto_start = 0.0
-    consumed_signal_event = None
-
     period = 1.0 / SEND_HZ
     last_send = 0.0
+    last_print = 0.0
 
-    print("=== UDP Teleop + Signals Auto Turn (Windows) ===")
-    print(f"Target: {ROBOT_IP}:{ROBOT_PORT} @ {SEND_HZ} Hz")
+    mode = None
+    mode_until = 0.0
+    cooldown_until = 0.0
+    consumed_signal_event = None
+    paused = False
+
+    print("=== YOLO Signals Auto Driver (Windows) ===")
+    print(f"Target cmd_vel UDP: {ROBOT_IP}:{ROBOT_PORT} @ {SEND_HZ} Hz")
     print(f"Signal file: {LATEST_SIGNAL_PATH}")
-    print("W: forward | S: back | A: left | D: right | X: stop/cancel | Q: quit")
+    print(f"Forward: {FORWARD_SPEED:.2f} m/s")
+    print(
+        f"Turns: {TURN_ANGLE_DEGREES} deg, w={TURN_ANGULAR_SPEED:.2f} rad/s, "
+        f"duration={TURN_SECONDS:.2f}s"
+    )
+    print(f"Stop signal: stop for {STOP_SECONDS:.1f}s")
+    print("X: pausa/reanudar | Q: salir con STOP")
     print("---------------------------------")
 
     try:
@@ -98,74 +132,70 @@ def main():
                     continue
 
                 key = ch.decode(errors="ignore").lower()
-
-                if key == "w":
-                    manual_v, manual_w = +LIN, 0.0
-                elif key == "s":
-                    manual_v, manual_w = -LIN, 0.0
-                elif key == "a":
-                    manual_v, manual_w = 0.0, +MANUAL_ANG
-                elif key == "d":
-                    manual_v, manual_w = 0.0, -MANUAL_ANG
-                elif key == "x":
-                    manual_v, manual_w = 0.0, 0.0
-                    auto_direction = None
-                    auto_until = 0.0
-                    consumed_signal_event = signal_event_id(read_latest_signal())
+                if key == "x":
+                    paused = not paused
+                    mode = None
+                    mode_until = 0.0
                     send_stop(sock)
-                    print("\nSTOP enviado. Auto giro cancelado.")
+                    print("\n[MANUAL] Pausa activada." if paused else "\n[MANUAL] Reanudando avance automatico.")
                 elif key == "q":
                     send_stop(sock)
-                    print("\nSaliendo (STOP enviado).")
+                    print("\n[MAIN] Saliendo (STOP enviado).")
                     return
 
-                if key in ("w", "a", "s", "d"):
-                    print(
-                        f"\r manual v={manual_v:+.2f} m/s | "
-                        f"w={manual_w:+.2f} rad/s     ",
-                        end="",
-                    )
-
             now = time.time()
+            last_signal = read_latest_signal()
 
-            if auto_direction and now >= auto_until:
-                auto_direction = None
-                manual_v, manual_w = 0.0, 0.0
+            if mode and now >= mode_until:
+                print(f"\n[AUTO] Accion terminada: {mode}.")
+                mode = None
+                mode_until = 0.0
+                cooldown_until = now + ACTION_COOLDOWN_SECONDS
                 send_stop(sock)
-                print("\n[AUTO] Giro terminado. STOP enviado.")
 
-            if not auto_direction:
-                signal = read_latest_signal()
-                event_id = signal_event_id(signal)
-                can_start = (
-                    event_id is not None
-                    and event_id != consumed_signal_event
-                    and now - last_auto_start >= SIGNAL_COOLDOWN_SECONDS
-                )
-                if can_start:
-                    auto_direction = signal["direction"]
-                    auto_until = now + TURN_SECONDS
-                    last_auto_start = now
+            if not paused and mode is None and now >= cooldown_until:
+                event_id = signal_event_id(last_signal)
+                if event_id is not None and event_id != consumed_signal_event:
                     consumed_signal_event = event_id
-                    manual_v, manual_w = 0.0, 0.0
-                    print(
-                        f"\n[AUTO] Senal {auto_direction} "
-                        f"conf={float(signal.get('confidence', 0.0)):.2f}. "
-                        f"Girando {TURN_SECONDS:.2f}s."
-                    )
+                    direction = last_signal["direction"]
+                    conf = float(last_signal.get("confidence") or 0.0)
+                    area = float(last_signal.get("bbox_area_ratio") or 0.0)
+                    if direction == "left":
+                        mode = "turn_left"
+                        mode_until = now + TURN_SECONDS
+                    elif direction == "right":
+                        mode = "turn_right"
+                        mode_until = now + TURN_SECONDS
+                    elif direction == "stop":
+                        mode = "stop"
+                        mode_until = now + STOP_SECONDS
 
-            if auto_direction == "left":
-                cmd_v, cmd_w = 0.0, +AUTO_TURN_ANG
-            elif auto_direction == "right":
-                cmd_v, cmd_w = 0.0, -AUTO_TURN_ANG
+                    if mode:
+                        print(
+                            f"\n[AUTO] Accion por senal {direction}: {mode} "
+                            f"conf={conf:.2f} area={area:.1%}"
+                        )
+
+            if paused:
+                cmd_v, cmd_w = 0.0, 0.0
+            elif mode == "turn_left":
+                cmd_v, cmd_w = 0.0, +TURN_ANGULAR_SPEED
+            elif mode == "turn_right":
+                cmd_v, cmd_w = 0.0, -TURN_ANGULAR_SPEED
+            elif mode == "stop":
+                cmd_v, cmd_w = 0.0, 0.0
             else:
-                cmd_v, cmd_w = manual_v, manual_w
+                cmd_v, cmd_w = FORWARD_SPEED, 0.0
 
             if now - last_send >= period:
-                sock.sendto(pack_cmd(cmd_v, cmd_w), (ROBOT_IP, ROBOT_PORT))
+                send_cmd(sock, cmd_v, cmd_w)
                 last_send = now
 
-            time.sleep(0.001)
+            if now - last_print >= 0.5:
+                print_status(mode, paused, last_signal)
+                last_print = now
+
+            time.sleep(0.002)
 
     finally:
         send_stop(sock)
