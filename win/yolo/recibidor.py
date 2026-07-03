@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 # ========= Telemetria =========
-ROBOT_IP = "172.27.129.200"
+ROBOT_IP = "172.31.245.200"
 ROBOT_PORT = 6000
 
 DESIRED_DOMAIN_ID = 2
@@ -257,7 +257,9 @@ def draw_detection(img, detection):
     center_x_ratio = detection["center_x_ratio"]
     actionable = detection["actionable"]
     color = detection_color(direction)
-    label = f"{direction} {confidence:.2f} area={area_ratio:.1%} cx={center_x_ratio:.2f}"
+    label = (
+        f"{direction} {confidence:.2f} area={area_ratio:.1%} cx={center_x_ratio:.2f}"
+    )
     if actionable:
         label += " ACTION"
 

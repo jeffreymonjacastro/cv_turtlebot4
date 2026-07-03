@@ -131,6 +131,7 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("emergency_angle_deg", 25.0) # Skip smoothing if error > this (deg)
         self.declare_parameter("median_kernel", 3)     # 1D median filter kernel size for bins
         self.declare_parameter("front_stop_distance", 0.55) # Camera frontal stop (m)
+        self.declare_parameter("planner_source", "lidar")
         self.declare_parameter("minimum_gap_width", 0.55)   # Min traversable gap width (m)
         self.declare_parameter("minimum_gap_width_straight", 0.50)
         self.declare_parameter("minimum_gap_width_turn", 0.75)
@@ -172,9 +173,13 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("turn_side_margin", 0.12)
         self.declare_parameter("corridor_centering_gain", 0.45)
         self.declare_parameter("corridor_mode_yaw_limit", 0.20)
+        self.declare_parameter("corridor_yaw_limit", 0.18)
         self.declare_parameter("hard_turn_yaw_threshold", 0.35)
         self.declare_parameter("narrow_corridor_speed", 0.055)
         self.declare_parameter("min_corridor_width", 0.48)
+        self.declare_parameter("front_center_stop", 0.38)
+        self.declare_parameter("front_wide_slow", 0.55)
+        self.declare_parameter("corridor_soft_side_min", 0.0)
         self.declare_parameter("turn_required_clearance", 0.36)
         self.declare_parameter("front_corner_clearance", 0.42)
 
@@ -204,6 +209,7 @@ class FollowTheGapDepth(Node):
         self.emergency_angle = np.radians(float(g("emergency_angle_deg")))
         self.med_kernel = int(g("median_kernel"))
         self.front_stop = float(g("front_stop_distance"))
+        self.planner_source = str(g("planner_source")).strip().lower()
         self.min_gap_w = float(g("minimum_gap_width"))
         self.min_gap_w_straight = float(g("minimum_gap_width_straight"))
         self.min_gap_w_turn = float(g("minimum_gap_width_turn"))
@@ -251,12 +257,18 @@ class FollowTheGapDepth(Node):
         self.turn_side_margin = float(g("turn_side_margin"))
         self.corridor_centering_gain = float(g("corridor_centering_gain"))
         self.corridor_mode_yaw_limit = float(g("corridor_mode_yaw_limit"))
+        self.corridor_yaw_limit = float(g("corridor_yaw_limit"))
         self.hard_turn_yaw_threshold = float(g("hard_turn_yaw_threshold"))
         self.narrow_corridor_speed = float(g("narrow_corridor_speed"))
         self.min_corridor_width = float(g("min_corridor_width"))
+        self.front_center_stop = float(g("front_center_stop"))
+        self.front_wide_slow = float(g("front_wide_slow"))
+        self.corridor_soft_side_min = float(g("corridor_soft_side_min"))
         self.turn_required_clearance = float(g("turn_required_clearance"))
         self.front_corner_clearance = float(g("front_corner_clearance"))
         self.side_hard_min = self.robot_half_width + self.straight_side_margin
+        if self.corridor_soft_side_min <= 0.0:
+            self.corridor_soft_side_min = self.side_hard_min
         self.side_turn_min = max(
             self.turn_required_clearance,
             self.robot_corner_radius + self.turn_side_margin,
@@ -336,6 +348,9 @@ class FollowTheGapDepth(Node):
         """
         self.last_depth_msg_time = time.monotonic()
 
+        if self.planner_source == "lidar":
+            return
+
         # Only act if we are in stereo mode (rgb_callback handles rgb_fallback).
         if self.camera_mode not in ("stereo", "rgb_fallback"):
             # lidar_only is handled by the watchdog; skip camera processing.
@@ -395,6 +410,17 @@ class FollowTheGapDepth(Node):
         if active_hfov is None:
             active_hfov = self.hfov  # stereo mode default
 
+        mid = self.num_bins // 2
+        bin_angle = active_hfov / self.num_bins
+        lidar_planning = abs(active_hfov - self.lidar_planning_fov) < 1e-6
+        if lidar_planning:
+            span = max(1, int(np.ceil(np.radians(12.0) / max(bin_angle, 1e-6))))
+            front_threshold = self.front_center_stop
+        else:
+            span = max(1, self.num_bins // 10)
+            front_threshold = self.front_stop
+        front_clearance = float(np.min(virtual_scan[mid - span: mid + span + 1]))
+
         # --- Speed-adaptive safety bubble (Bug B fix) ----------------------
         # bubble_radius = robot_radius + static_margin + dynamic_margin(speed)
         # dynamic margin: how far the robot travels in ~0.15s reaction time
@@ -424,18 +450,21 @@ class FollowTheGapDepth(Node):
         if best_bin is not None:
             speed, yaw = self.compute_control(best_bin, cleaned_scan, active_hfov)
         else:
-            self.get_logger().warn(f"NO VALID GAP [{self.camera_mode}] - ROTATING TO SEARCH")
-            speed = 0.0
-            yaw = self.choose_open_turn_yaw(virtual_scan)
+            if front_clearance > front_threshold:
+                self.get_logger().warn(
+                    f"NO VALID GAP [{self.camera_mode}] - CENTER CLEAR, CREEPING"
+                )
+                speed, yaw = self.min_v, 0.0
+            else:
+                self.get_logger().warn(f"NO VALID GAP [{self.camera_mode}] - ROTATING TO SEARCH")
+                speed = 0.0
+                yaw = self.choose_open_turn_yaw(virtual_scan)
 
         # --- Frontal planner override ----------------------------------------
-        mid = self.num_bins // 2
-        span = max(1, self.num_bins // 10)
-        front_clearance = float(np.min(virtual_scan[mid - span: mid + span + 1]))
-        if front_clearance < self.front_stop:
+        if front_clearance < front_threshold:
             self.get_logger().warn(
                 f"FRONT BLOCKED [{self.camera_mode}]: "
-                f"{front_clearance:.2f}m < {self.front_stop}m"
+                f"{front_clearance:.2f}m < {front_threshold}m"
             )
             speed = 0.0
             if abs(yaw) < 0.05:
@@ -638,13 +667,22 @@ class FollowTheGapDepth(Node):
         if not candidate_gaps:
             return scores, None, valid_gaps
 
-        # Prefer going straight when a near-widest gap exists near the center.
-        widest = max(g[2] for g in candidate_gaps)
-        near_widest = [g for g in candidate_gaps if g[2] >= widest * 0.85]
-        s, e, width_m, best_bin = min(
-            near_widest,
-            key=lambda g: abs(g[3] - center_bin),
-        )
+        center_idx = int(round(center_bin))
+        center_gaps = [
+            (s, e, w, center_idx)
+            for s, e, w, _ in candidate_gaps
+            if s <= center_idx <= e and cleaned_scan[center_idx] > front_stop
+        ]
+        if center_gaps:
+            s, e, width_m, best_bin = max(center_gaps, key=lambda g: g[2])
+        else:
+            # Prefer going straight when a near-widest gap exists near the center.
+            widest = max(g[2] for g in candidate_gaps)
+            near_widest = [g for g in candidate_gaps if g[2] >= widest * 0.85]
+            s, e, width_m, best_bin = min(
+                near_widest,
+                key=lambda g: abs(g[3] - center_bin),
+            )
 
         # Populate scores for telemetry (1 = selected gap, 0.5 = other valid gaps)
         for gs, ge, _ in valid_gaps:
@@ -830,10 +868,10 @@ class FollowTheGapDepth(Node):
         safe_yaw   = yaw
 
         # --- Layer 1: Hard frontal stop -----------------------------------
-        if front_center <= self.front_stop or front <= self.lidar_front_stop:
+        if front_center <= self.front_center_stop:
             self.get_logger().warn(
                 f"[LIDAR SAFETY] FRONT STOP: center={front_center:.2f}m "
-                f"wide={front:.2f}m"
+                f"<= {self.front_center_stop:.2f}m wide={front:.2f}m"
             )
             safe_speed = 0.0
             if abs(safe_yaw) < 0.05:
@@ -842,15 +880,17 @@ class FollowTheGapDepth(Node):
                 safe_yaw = (1.0 if left_clear >= right_clear else -1.0) * min(0.35, self.max_w * 0.35)
 
         # --- Layer 2: Progressive frontal slowdown -------------------------
-        slow_front = min(front, front_center)
+        slow_front = front_center
         if slow_front < self.lidar_slow_distance:
-            span = max(self.lidar_slow_distance - self.lidar_front_stop, 1e-3)
-            scale = float(np.clip((slow_front - self.lidar_front_stop) / span, 0.0, 1.0))
+            span = max(self.lidar_slow_distance - self.front_center_stop, 1e-3)
+            scale = float(np.clip((slow_front - self.front_center_stop) / span, 0.0, 1.0))
             safe_speed = min(safe_speed, self.max_v * scale)
-            if front_center <= self.front_stop and abs(safe_yaw) < 0.05:
+            if front_center <= self.front_center_stop and abs(safe_yaw) < 0.05:
                 left_clear = max(left, front_left)
                 right_clear = max(right, front_right)
                 safe_yaw = (1.0 if left_clear >= right_clear else -1.0) * min(0.35, self.max_w * 0.35)
+        if front < self.front_wide_slow and front_center > self.front_center_stop:
+            safe_speed = min(safe_speed, self.narrow_corridor_speed)
 
         corridor_width = left + right
         corridor_fits = corridor_width >= max(
@@ -859,8 +899,10 @@ class FollowTheGapDepth(Node):
         )
         left_ok_for_straight = left > self.side_hard_min
         right_ok_for_straight = right > self.side_hard_min
-        going_mostly_straight = abs(safe_yaw) < self.corridor_mode_yaw_limit
-        corridor_front_clear = front_center > self.front_stop and front > self.lidar_front_stop
+        going_mostly_straight = abs(safe_yaw) < self.corridor_yaw_limit
+        corridor_front_clear = front_center > self.front_center_stop
+        soft_side_min = max(self.corridor_soft_side_min, self.side_hard_min)
+        side_needs_soft_centering = left < soft_side_min or right < soft_side_min
         narrow_corridor_ok = (
             corridor_fits
             and left_ok_for_straight
@@ -870,11 +912,24 @@ class FollowTheGapDepth(Node):
         )
 
         # --- Layer 3: Narrow corridor handling -----------------------------
-        if narrow_corridor_ok:
+        if (
+            corridor_front_clear
+            and left_ok_for_straight
+            and right_ok_for_straight
+            and side_needs_soft_centering
+        ):
+            safe_speed = min(safe_speed, self.narrow_corridor_speed)
+            center_error = left - right
+            safe_yaw = float(np.clip(
+                self.corridor_centering_gain * center_error,
+                -self.corridor_yaw_limit,
+                self.corridor_yaw_limit,
+            ))
+        elif narrow_corridor_ok:
             safe_speed = min(safe_speed, self.narrow_corridor_speed)
             center_error = left - right
             safe_yaw += self.corridor_centering_gain * center_error
-            safe_yaw = float(np.clip(safe_yaw, -self.max_w * 0.45, self.max_w * 0.45))
+            safe_yaw = float(np.clip(safe_yaw, -self.corridor_yaw_limit, self.corridor_yaw_limit))
         elif left <= self.side_hard_min or right <= self.side_hard_min:
             self.get_logger().warn(
                 f"[LIDAR SAFETY] SIDE TOO CLOSE FOR STRAIGHT: "
@@ -926,8 +981,7 @@ class FollowTheGapDepth(Node):
             safe_speed == 0.0
             and safe_yaw == 0.0
             and (
-                front_center <= self.front_stop
-                or front <= self.lidar_front_stop
+                front_center <= self.front_center_stop
                 or left <= self.side_hard_min
                 or right <= self.side_hard_min
                 or front_left <= self.front_corner_clearance
@@ -963,7 +1017,7 @@ class FollowTheGapDepth(Node):
                     f"(left_clear={left_clear:.2f}m right_clear={right_clear:.2f}m)"
                 )
 
-        if (front_center <= self.front_stop or front <= self.lidar_front_stop) and safe_speed > 0.0:
+        if front_center <= self.front_center_stop and safe_speed > 0.0:
             self.get_logger().warn(
                 f"[LIDAR SAFETY] FRONT VETO: refusing forward speed with "
                 f"center={front_center:.2f}m wide={front:.2f}m"
@@ -1042,6 +1096,9 @@ class FollowTheGapDepth(Node):
         turns at the right time and with the right radius.
         """
         self.last_rgb_msg_time = time.monotonic()
+
+        if self.planner_source == "lidar":
+            return
 
         if self.camera_mode != "rgb_fallback":
             return
@@ -1138,7 +1195,6 @@ class FollowTheGapDepth(Node):
             self.last_scan_msg_time is None
             or (now - self.last_scan_msg_time) > self.lidar_timeout
         )
-
         # LiDAR failure -> full stop (mandatory safety sensor)
         if lidar_stale:
             self.get_logger().warn("[WATCHDOG] Forcing ZERO velocity: lidar_stale_or_missing")
@@ -1146,8 +1202,9 @@ class FollowTheGapDepth(Node):
             self._send_log("WARN", "watchdog_stop reasons=lidar_stale_or_missing")
             return
 
-        # LiDAR is OK: if we are in lidar_only mode, drive with LiDAR planner.
-        if self.camera_mode == "lidar_only":
+        # LiDAR is OK: when requested, let LiDAR publish the motion plan even
+        # if RGB/depth callbacks are present only for diagnostics.
+        if self.planner_source == "lidar" or self.camera_mode == "lidar_only":
             self._lidar_only_navigate()
 
     def publish_cmd(self, speed: float, yaw: float):
