@@ -317,12 +317,16 @@ class FollowTheGapDepth(Node):
         self.last_scan_range_max = 30.0
 
         # ---- Subscribers & Publisher ----
-        self.sub_depth = self.create_subscription(
-            Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data
-        )
-        self.sub_rgb = self.create_subscription(
-            Image, self.rgb_topic, self.rgb_callback, qos_profile_sensor_data
-        )
+        if self.planner_source == "lidar":
+            self.sub_depth = None
+            self.sub_rgb = None
+        else:
+            self.sub_depth = self.create_subscription(
+                Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data
+            )
+            self.sub_rgb = self.create_subscription(
+                Image, self.rgb_topic, self.rgb_callback, qos_profile_sensor_data
+            )
         self.sub_scan = self.create_subscription(
             LaserScan, self.scan_topic, self.scan_callback, qos_profile_sensor_data
         )
@@ -336,8 +340,11 @@ class FollowTheGapDepth(Node):
         self.watchdog_timer = self.create_timer(0.15, self.safety_watchdog)
 
         self.get_logger().info("Follow-the-Gap Mixed (Stereo+RGB+LiDAR) Node Initialized.")
-        self.get_logger().info(f"Subscribed to stereo depth: {self.depth_topic}")
-        self.get_logger().info(f"Subscribed to RGB fallback: {self.rgb_topic}")
+        if self.planner_source == "lidar":
+            self.get_logger().info("Camera planner disabled: using LiDAR-only navigation.")
+        else:
+            self.get_logger().info(f"Subscribed to stereo depth: {self.depth_topic}")
+            self.get_logger().info(f"Subscribed to RGB fallback: {self.rgb_topic}")
         self.get_logger().info(f"Subscribed to LiDAR: {self.scan_topic}")
         self.get_logger().info(f"Publishing TwistStamped to: {self.cmd_topic}")
 
@@ -910,14 +917,20 @@ class FollowTheGapDepth(Node):
             and corridor_front_clear
             and going_mostly_straight
         )
-
-        # --- Layer 3: Narrow corridor handling -----------------------------
-        if (
-            corridor_front_clear
+        corridor_travel_ok = (
+            corridor_fits
             and left_ok_for_straight
             and right_ok_for_straight
-            and side_needs_soft_centering
-        ):
+            and corridor_front_clear
+            and (
+                side_needs_soft_centering
+                or min(left, right) < self.lidar_slow_distance
+                or front < self.front_wide_slow
+            )
+        )
+
+        # --- Layer 3: Narrow corridor handling -----------------------------
+        if corridor_travel_ok:
             safe_speed = min(safe_speed, self.narrow_corridor_speed)
             center_error = left - right
             safe_yaw = float(np.clip(
@@ -1122,6 +1135,10 @@ class FollowTheGapDepth(Node):
           rgb_fallback-- no stereo, but RGB frames are arriving
           lidar_only  -- no camera frames at all (LiDAR-only navigation)
         """
+        if self.planner_source == "lidar":
+            self.camera_mode = "lidar_only"
+            return
+
         now = time.monotonic()
         # Only re-evaluate at stereo_check_interval to avoid log spam.
         if now - self._last_stereo_check < self.stereo_check_interval:
@@ -1378,32 +1395,33 @@ class FollowTheGapDepth(Node):
         self.sock.sendto(" ".join(fields).encode("utf-8"), self.authorized_addr)
 
     def _status_check(self):
-        image_topics = [
-            name
-            for name, types in self.get_topic_names_and_types()
-            if name.startswith("/oakd") and "sensor_msgs/msg/Image" in types
-        ]
-        published_image_topics = [
-            f"{name}({len(self.get_publishers_info_by_topic(name))})"
-            for name in image_topics
-            if self.get_publishers_info_by_topic(name)
-        ]
-        depth_publishers = len(self.get_publishers_info_by_topic(self.depth_topic))
+        if self.planner_source != "lidar":
+            image_topics = [
+                name
+                for name, types in self.get_topic_names_and_types()
+                if name.startswith("/oakd") and "sensor_msgs/msg/Image" in types
+            ]
+            published_image_topics = [
+                f"{name}({len(self.get_publishers_info_by_topic(name))})"
+                for name in image_topics
+                if self.get_publishers_info_by_topic(name)
+            ]
+            depth_publishers = len(self.get_publishers_info_by_topic(self.depth_topic))
 
-        if self.last_depth_msg_time is None:
-            if depth_publishers == 0:
-                topic_state = "no_depth_publisher"
-            elif self.depth_topic in image_topics:
-                topic_state = "depth_publisher_no_frames"
-            else:
-                topic_state = "topic_not_visible"
-            msg = (
-                f"No depth frames received on {self.depth_topic}; "
-                f"state={topic_state}; depth_publishers={depth_publishers}; "
-                f"published_image_topics={','.join(published_image_topics) if published_image_topics else 'none'}"
-            )
-            self.get_logger().warn(msg)
-            self._send_log("WARN", msg)
+            if self.last_depth_msg_time is None:
+                if depth_publishers == 0:
+                    topic_state = "no_depth_publisher"
+                elif self.depth_topic in image_topics:
+                    topic_state = "depth_publisher_no_frames"
+                else:
+                    topic_state = "topic_not_visible"
+                msg = (
+                    f"No depth frames received on {self.depth_topic}; "
+                    f"state={topic_state}; depth_publishers={depth_publishers}; "
+                    f"published_image_topics={','.join(published_image_topics) if published_image_topics else 'none'}"
+                )
+                self.get_logger().warn(msg)
+                self._send_log("WARN", msg)
 
         scan_publishers = len(self.get_publishers_info_by_topic(self.scan_topic))
         if self.last_scan_msg_time is None:
