@@ -2,3 +2,11 @@
 output/
 labels-gt/
 kaggle/**/outputs/
+
+# Local MacOs
+.DS_Store
+
+# Local Codex / robot access notes
+.codex/robot_access.local.md
+.env.local
+robot_access.local.md
