@@ -1,0 +1,12 @@
+# Local macOS dependencies for laptop-side receiver tools.
+#
+# Used by:
+# - win/yolo/recibidor.py
+# - win/detect_qr/recibidor.py
+# - win/original/recibidor_datos.py
+#
+# Note: win/lidar/recibidor.py uses only the Python standard library.
+numpy>=2.0
+opencv-python>=4.10
+ultralytics>=8.4.60
+
