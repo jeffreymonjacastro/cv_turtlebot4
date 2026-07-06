@@ -56,6 +56,9 @@ class WallFollowNavigation:
         desired_wall_distance: float = 0.42,
         front_clear_distance: float = 0.55,
         recovery_clearance: float = 0.42,
+        side_avoid_distance: float = 0.34,
+        front_corner_avoid_distance: float = 0.62,
+        avoidance_gain: float = 0.65,
     ):
         self.base_speed = base_speed
         self.narrow_speed = narrow_speed
@@ -65,6 +68,9 @@ class WallFollowNavigation:
         self.desired_wall_distance = desired_wall_distance
         self.front_clear_distance = front_clear_distance
         self.recovery_clearance = recovery_clearance
+        self.side_avoid_distance = side_avoid_distance
+        self.front_corner_avoid_distance = front_corner_avoid_distance
+        self.avoidance_gain = avoidance_gain
         self._last_error = None
         self._last_time = time.monotonic()
 
@@ -95,10 +101,10 @@ class WallFollowNavigation:
                 linear = self.narrow_speed
             mode = "CORRIDOR_FOLLOW"
         elif left is not None:
-            error = self.desired_wall_distance - left
+            error = left - self.desired_wall_distance
             mode = "LEFT_WALL_FOLLOW"
         elif right is not None:
-            error = right - self.desired_wall_distance
+            error = self.desired_wall_distance - right
             mode = "RIGHT_WALL_FOLLOW"
         else:
             return self._recovery(observation, front, left, right)
@@ -106,20 +112,53 @@ class WallFollowNavigation:
         dt = max(0.02, observation.dt)
         d_error = 0.0 if self._last_error is None else (error - self._last_error) / dt
         self._last_error = error
-        yaw = -self.kp * error - self.kd * d_error
-        yaw = max(-self.max_yaw, min(self.max_yaw, yaw))
+        yaw_pd = self.kp * error + self.kd * d_error
+        yaw_avoid = 0.0
 
         if front_left is not None and front_right is not None:
             debug["front_left"] = front_left
             debug["front_right"] = front_right
-            if front_left < 0.38 and yaw > 0.0:
-                yaw = min(yaw, 0.0)
-                debug["yaw_veto"] = "left_front_close"
-            if front_right < 0.38 and yaw < 0.0:
-                yaw = max(yaw, 0.0)
-                debug["yaw_veto"] = "right_front_close"
+            if front_left < self.front_corner_avoid_distance:
+                pressure = (self.front_corner_avoid_distance - front_left) / self.front_corner_avoid_distance
+                yaw_avoid -= self.avoidance_gain * pressure
+                linear = min(linear, self.narrow_speed)
+                debug["front_left_pressure"] = pressure
+            if front_right < self.front_corner_avoid_distance:
+                pressure = (self.front_corner_avoid_distance - front_right) / self.front_corner_avoid_distance
+                yaw_avoid += self.avoidance_gain * pressure
+                linear = min(linear, self.narrow_speed)
+                debug["front_right_pressure"] = pressure
 
-        debug.update({"error": error, "d_error": d_error})
+        if left is not None and left < self.side_avoid_distance:
+            pressure = (self.side_avoid_distance - left) / self.side_avoid_distance
+            yaw_avoid -= self.avoidance_gain * pressure
+            linear = min(linear, self.narrow_speed)
+            debug["left_side_pressure"] = pressure
+        if right is not None and right < self.side_avoid_distance:
+            pressure = (self.side_avoid_distance - right) / self.side_avoid_distance
+            yaw_avoid += self.avoidance_gain * pressure
+            linear = min(linear, self.narrow_speed)
+            debug["right_side_pressure"] = pressure
+
+        yaw = yaw_pd + yaw_avoid
+        yaw = max(-self.max_yaw, min(self.max_yaw, yaw))
+
+        if front_left is not None and front_left < self.side_avoid_distance and yaw > 0.0:
+            yaw = min(yaw, 0.0)
+            debug["yaw_veto"] = "left_front_close"
+        if front_right is not None and front_right < self.side_avoid_distance and yaw < 0.0:
+            yaw = max(yaw, 0.0)
+            debug["yaw_veto"] = "right_front_close"
+
+        debug.update(
+            {
+                "error": error,
+                "d_error": d_error,
+                "yaw_pd": yaw_pd,
+                "yaw_avoid": yaw_avoid,
+                "control_sign": "positive_error_turns_left_negative_error_turns_right",
+            }
+        )
         return NavigationSuggestion(
             TwistCommand(linear, yaw),
             mode,

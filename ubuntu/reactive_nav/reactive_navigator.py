@@ -140,6 +140,9 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("wall_kd", 0.04)
             self.declare_parameter("front_clear_distance", 0.55)
             self.declare_parameter("recovery_clearance", 0.42)
+            self.declare_parameter("side_avoid_distance", 0.34)
+            self.declare_parameter("front_corner_avoid_distance", 0.62)
+            self.declare_parameter("avoidance_gain", 0.65)
 
             self.declare_parameter("front_stop_distance", 0.32)
             self.declare_parameter("side_stop_distance", 0.14)
@@ -172,6 +175,11 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("persistent_log_enabled", True)
             self.declare_parameter("persistent_log_path", "output/reactive_nav_debug.jsonl")
             self.declare_parameter("persistent_log_period_s", 0.10)
+            self.declare_parameter("collision_logging_enabled", True)
+            self.declare_parameter("hazard_topic", "/hazard_detection")
+            self.declare_parameter("collision_log_path", "output/collision_events.jsonl")
+            self.declare_parameter("collision_image_dir", "output/collision_frames")
+            self.declare_parameter("collision_cooldown_s", 2.0)
 
             self.scan_topic = self._param_str("scan_topic")
             self.auto_discover_scan = self._param_bool("auto_discover_scan")
@@ -194,14 +202,20 @@ def run_ros_node(args=None) -> None:
             self.current_scan_topic = ""
 
             self.last_image_time: Optional[float] = None
+            self.latest_image_msg = None
             self.image_count = 0
             self.qr_frame_counter = 0
             self.last_qr_time = 0.0
             self.qr_detector = None
             self.bridge = None
             self.image_sub = None
+            self.hazard_sub = None
+            self.last_collision_log_time = 0.0
 
             self.last_signal = SignalState()
+            self.last_requested_command = TwistCommand()
+            self.last_published_command = TwistCommand()
+            self.last_motion_enabled = False
             self.last_loop_time = time.monotonic()
             self.last_diag_time = 0.0
             self.last_persistent_log_time = 0.0
@@ -217,6 +231,9 @@ def run_ros_node(args=None) -> None:
                 "kd": self._param_float("wall_kd"),
                 "front_clear_distance": self._param_float("front_clear_distance"),
                 "recovery_clearance": self._param_float("recovery_clearance"),
+                "side_avoid_distance": self._param_float("side_avoid_distance"),
+                "front_corner_avoid_distance": self._param_float("front_corner_avoid_distance"),
+                "avoidance_gain": self._param_float("avoidance_gain"),
             }
             self.nav_module = create_navigation_module(self._param_str("nav_module"), **nav_kwargs)
 
@@ -253,6 +270,12 @@ def run_ros_node(args=None) -> None:
                 enabled=self._param_bool("persistent_log_enabled"),
             )
             self.persistent_log_period_s = max(0.0, self._param_float("persistent_log_period_s"))
+            self.collision_logger = PersistentJsonlLogger(
+                self._param_str("collision_log_path"),
+                enabled=self._param_bool("collision_logging_enabled"),
+            )
+            self.collision_image_dir = Path(self._param_str("collision_image_dir"))
+            self.collision_cooldown_s = max(0.0, self._param_float("collision_cooldown_s"))
 
             if self.cmd_msg_type in ("twist", "geometry_msgs/msg/twist"):
                 self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
@@ -262,6 +285,7 @@ def run_ros_node(args=None) -> None:
                 self._cmd_message_kind = "TwistStamped"
 
             self._init_qr_subscription(Image, qos_profile_sensor_data)
+            self._init_collision_subscription(qos_profile_sensor_data)
             self._ensure_scan_subscription(LaserScan, qos_profile_sensor_data, force=True)
 
             period = 1.0 / max(1.0, self._param_float("control_hz"))
@@ -310,6 +334,29 @@ def run_ros_node(args=None) -> None:
             self.diag.log(
                 "INFO",
                 f"[QR] subscribed image_topic={image_topic} publishers={pub_count}",
+            )
+
+        def _init_collision_subscription(self, qos_profile) -> None:
+            if not self._param_bool("collision_logging_enabled"):
+                self.diag.log("INFO", "[COLLISION] event logging disabled by parameter")
+                return
+            try:
+                from irobot_create_msgs.msg import HazardDetectionVector
+            except ImportError as exc:
+                self.diag.log("WARN", f"[COLLISION] irobot_create_msgs unavailable; hazard logging disabled: {exc}")
+                return
+
+            hazard_topic = self._param_str("hazard_topic")
+            self.hazard_sub = self.create_subscription(
+                HazardDetectionVector,
+                hazard_topic,
+                self.hazard_callback,
+                qos_profile,
+            )
+            pub_count = len(self.get_publishers_info_by_topic(hazard_topic))
+            self.diag.log(
+                "INFO",
+                f"[COLLISION] subscribed hazard_topic={hazard_topic} publishers={pub_count}",
             )
 
         def _laser_scan_topics(self) -> list[str]:
@@ -380,6 +427,7 @@ def run_ros_node(args=None) -> None:
 
         def image_callback(self, msg) -> None:
             self.last_image_time = time.monotonic()
+            self.latest_image_msg = msg
             self.image_count += 1
             self.qr_frame_counter += 1
             if self.qr_detector is None or self.bridge is None:
@@ -411,6 +459,60 @@ def run_ros_node(args=None) -> None:
                 self.diag.log("INFO", f"[QR] logged content={event.content!r} path={event.path}")
             elif event.duplicate:
                 self.diag.log("INFO", f"[QR] duplicate ignored content={event.content!r}")
+
+        def hazard_callback(self, msg) -> None:
+            detections = list(getattr(msg, "detections", []) or [])
+            if not detections:
+                return
+
+            now = time.monotonic()
+            if now - self.last_collision_log_time < self.collision_cooldown_s:
+                return
+            self.last_collision_log_time = now
+
+            image_path = self._save_collision_frame()
+            hazard_payload = self._ros_message_to_dict(msg)
+            sectors = self.latest_sectors
+            record = {
+                "event": "hazard_detection",
+                "hazard_topic": self._param_str("hazard_topic"),
+                "hazard": self._json_clean(hazard_payload),
+                "detection_count": len(detections),
+                "state": self.last_state,
+                "reason": self.last_reason,
+                "scan_topic": self.current_scan_topic or None,
+                "scan_count": self.scan_count,
+                "image_count": self.image_count,
+                "freshness": {
+                    "lidar_age_s": self._json_float(math.inf if self.last_scan_time is None else now - self.last_scan_time),
+                    "image_age_s": self._json_float(math.inf if self.last_image_time is None else now - self.last_image_time),
+                    "signal_stale": self.last_signal.stale,
+                },
+                "command": {
+                    "last_requested_linear_x": self._json_float(self.last_requested_command.linear_x),
+                    "last_requested_angular_z": self._json_float(self.last_requested_command.angular_z),
+                    "last_published_linear_x": self._json_float(self.last_published_command.linear_x),
+                    "last_published_angular_z": self._json_float(self.last_published_command.angular_z),
+                    "motion_enabled_last_cycle": self.last_motion_enabled,
+                    "positive_angular_z_means": "left_turn",
+                },
+                "lidar": self._collision_lidar_snapshot(sectors),
+                "signal": {
+                    "direction": self.last_signal.direction,
+                    "confidence": self._json_float(self.last_signal.confidence),
+                    "bbox_area_ratio": self._json_float(self.last_signal.bbox_area_ratio),
+                    "bbox_center_x_ratio": self._json_float(self.last_signal.bbox_center_x_ratio),
+                    "stale": self.last_signal.stale,
+                    "reason": self.last_signal.reason,
+                },
+                "camera_frame_path": image_path,
+            }
+            self.collision_logger.write(record)
+            self.diag.log(
+                "WARN",
+                f"[COLLISION] hazard event logged detections={len(detections)} "
+                f"log={self._param_str('collision_log_path')} image={image_path or 'none'}",
+            )
 
         def _read_signal(self) -> SignalState:
             return read_signal_state(
@@ -452,6 +554,9 @@ def run_ros_node(args=None) -> None:
                 )
             )
             published_command, motion_enabled = self._publish_command(output.command, output.publish_motion)
+            self.last_requested_command = output.command
+            self.last_published_command = published_command
+            self.last_motion_enabled = motion_enabled
             self._write_persistent_log(
                 output=output,
                 sectors=sectors,
@@ -602,6 +707,67 @@ def run_ros_node(args=None) -> None:
             }
             self.run_logger.write(record)
 
+        def _collision_lidar_snapshot(self, sectors: Optional[SectorMap]) -> Dict[str, Any]:
+            if sectors is None:
+                return {
+                    "valid_count": 0,
+                    "total_count": 0,
+                    "sector_distance_m": {},
+                    "left_minus_right_m": None,
+                }
+            sector_distances = {
+                name: self._json_float(stats.distance)
+                for name, stats in sectors.sectors.items()
+            }
+            sector_raw_min = {
+                name: self._json_float(stats.min_range)
+                for name, stats in sectors.sectors.items()
+            }
+            sector_counts = {
+                name: stats.valid_count
+                for name, stats in sectors.sectors.items()
+            }
+            left = sectors.distance("left")
+            right = sectors.distance("right")
+            left_minus_right = left - right if left is not None and right is not None else None
+            nearest = min(sectors.points, key=lambda point: point.distance_m) if sectors.points else None
+            return {
+                "valid_count": sectors.valid_count,
+                "total_count": sectors.total_count,
+                "sector_distance_m": sector_distances,
+                "sector_raw_min_m": sector_raw_min,
+                "sector_valid_count": sector_counts,
+                "left_minus_right_m": self._json_float(left_minus_right),
+                "nearest_dist_m": self._json_float(nearest.distance_m if nearest else None),
+                "nearest_angle_deg": self._json_float(nearest.angle_deg if nearest else None),
+            }
+
+        def _save_collision_frame(self) -> Optional[str]:
+            if self.latest_image_msg is None or self.bridge is None:
+                return None
+            try:
+                import cv2
+            except ImportError:
+                return None
+            try:
+                self.collision_image_dir.mkdir(parents=True, exist_ok=True)
+                cv_img = self.bridge.imgmsg_to_cv2(self.latest_image_msg, desired_encoding="bgr8")
+                filename = f"collision_{int(time.time() * 1000)}.jpg"
+                path = self.collision_image_dir / filename
+                if cv2.imwrite(str(path), cv_img):
+                    return str(path)
+            except Exception as exc:
+                self.diag.log("WARN", f"[COLLISION] failed to save camera frame: {exc}")
+            return None
+
+        def _ros_message_to_dict(self, msg):
+            try:
+                from rosidl_runtime_py.convert import message_to_ordereddict
+
+                return message_to_ordereddict(msg)
+            except Exception:
+                return str(msg)
+
         def _emit_diagnostics(self, output, sectors: Optional[SectorMap], lidar_age: float) -> None:
             now = time.monotonic()
             changed = output.state != self.last_state or output.reason != self.last_reason
@@ -736,6 +902,41 @@ def run_self_test() -> None:
     nav = create_navigation_module("wall_follow")
     suggestion = nav.compute(NavigationObservation(sectors, time.monotonic(), 0.1))
     assert suggestion.mode in ("RECOVERY", "CORRIDOR_FOLLOW", "LEFT_WALL_FOLLOW", "RIGHT_WALL_FOLLOW")
+
+    class FakeSectors:
+        valid_count = 100
+        points = ()
+
+        def __init__(self, distances):
+            self._distances = distances
+
+        def distance(self, name, default=None):
+            return self._distances.get(name, default)
+
+    sign_nav = create_navigation_module("wall_follow", base_speed=0.05, narrow_speed=0.03)
+    left_close = FakeSectors(
+        {
+            "front": 2.0,
+            "front_left": 2.0,
+            "front_right": 2.0,
+            "left": 0.25,
+            "right": 1.00,
+        }
+    )
+    sign_suggestion = sign_nav.compute(NavigationObservation(left_close, time.monotonic(), 0.1))
+    assert sign_suggestion.command.angular_z < 0.0
+
+    right_close = FakeSectors(
+        {
+            "front": 2.0,
+            "front_left": 2.0,
+            "front_right": 2.0,
+            "left": 1.00,
+            "right": 0.25,
+        }
+    )
+    sign_suggestion = sign_nav.compute(NavigationObservation(right_close, time.monotonic(), 0.1))
+    assert sign_suggestion.command.angular_z > 0.0
 
     arbiter = BehaviorArbiter()
     decision = arbiter.decide(

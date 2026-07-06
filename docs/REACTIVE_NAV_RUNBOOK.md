@@ -184,6 +184,8 @@ python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --r
   -p enable_motion:=false \
   -p telemetry_port:=6001 \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
+  -p collision_log_path:=/home/ubuntu/output/collision_events.jsonl \
+  -p collision_image_dir:=/home/ubuntu/output/collision_frames \
   -p diagnostic_period_s:=1.0
 ```
 
@@ -249,6 +251,25 @@ Copy the log to the Mac and summarize it:
 ```bash
 scp turtlebot4:/home/ubuntu/output/reactive_nav_debug.jsonl output/reactive_nav_debug.jsonl
 python3 scripts/analyze_reactive_nav_log.py output/reactive_nav_debug.jsonl
+```
+
+Create 3 hazard events are logged separately with a cooldown:
+
+```text
+/home/ubuntu/output/collision_events.jsonl
+```
+
+If the OAK-D image callback has a recent frame, the event also saves:
+
+```text
+/home/ubuntu/output/collision_frames/collision_<timestamp>.jpg
+```
+
+Copy event artifacts back to the Mac:
+
+```bash
+scp turtlebot4:/home/ubuntu/output/collision_events.jsonl output/collision_events.jsonl
+scp -r turtlebot4:/home/ubuntu/output/collision_frames output/collision_frames
 ```
 
 If LiDAR is missing, expected safe failure:
@@ -383,11 +404,18 @@ python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --r
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
-  -p max_yaw:=0.35 \
-  -p wall_kp:=0.25 \
-  -p wall_kd:=0.02 \
-  -p base_speed:=0.05 \
-  -p narrow_speed:=0.03
+  -p collision_log_path:=/home/ubuntu/output/collision_events.jsonl \
+  -p collision_image_dir:=/home/ubuntu/output/collision_frames \
+  -p collision_cooldown_s:=2.0 \
+  -p max_yaw:=0.65 \
+  -p wall_kp:=0.45 \
+  -p wall_kd:=0.03 \
+  -p base_speed:=0.04 \
+  -p narrow_speed:=0.025 \
+  -p front_clear_distance:=0.70 \
+  -p front_corner_avoid_distance:=0.70 \
+  -p side_avoid_distance:=0.38 \
+  -p avoidance_gain:=0.85
 ```
 
 Expected logs:
@@ -395,7 +423,7 @@ Expected logs:
 ```text
 dry_run=False enable_motion=True
 state=CORRIDOR_FOLLOW
-cmd=(0.050,...)
+cmd=(0.040,...)
 scan_count increasing
 lidar_age < 0.5s
 ```
@@ -405,7 +433,7 @@ lidar_age < 0.5s
 Example:
 
 ```text
-cmd=(0.050,0.073) dry_run=False enable_motion=True
+cmd=(0.040,0.073) dry_run=False enable_motion=True
 ```
 
 This means the navigator is computing and publishing motion. The problem is
