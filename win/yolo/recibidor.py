@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 # ========= Telemetria =========
-ROBOT_IP = "172.31.245.200"
+ROBOT_IP = "10.60.199.200"
 ROBOT_PORT = 6000
 
 DESIRED_DOMAIN_ID = 2
