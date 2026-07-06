@@ -1,7 +1,7 @@
 .venv/
 output/
-labels-gt/
-kaggle/**/outputs/
+#labels-gt/
+#kaggle/**/outputs/
 
 # Local MacOs
 .DS_Store

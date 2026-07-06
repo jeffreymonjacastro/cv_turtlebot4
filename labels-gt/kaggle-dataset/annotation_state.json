@@ -1,0 +1,13 @@
+{
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal",
+    "meta"
+  ],
+  "total_source_images": 540,
+  "packaged_labeled_images": 458,
+  "train_images": 366,
+  "val_images": 92,
+  "unlabeled_or_skipped_source_images": 82
+}

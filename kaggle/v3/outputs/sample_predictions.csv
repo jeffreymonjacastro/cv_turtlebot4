@@ -1,0 +1,13 @@
+image,gt_class,gt_area_ratio,pred_class,pred_conf,pred_iou_vs_gt,qualitative_image
+left-arrow_frame_000003.jpg,left-arrow,0.015872,left-arrow,0.656931,0.922122,left-arrow_frame_000003_gt_pred.jpg
+left-arrow_frame_000058.jpg,left-arrow,0.015312,left-arrow,0.944226,0.928721,left-arrow_frame_000058_gt_pred.jpg
+left-arrow_frame_000163.jpg,left-arrow,0.018368,left-arrow,0.978090,0.886507,left-arrow_frame_000163_gt_pred.jpg
+left-arrow_frame_000235.jpg,left-arrow,0.038080,left-arrow,0.591962,0.928138,left-arrow_frame_000235_gt_pred.jpg
+right-arrow_frame_000061.jpg,right-arrow,0.016384,right-arrow,0.443315,0.924617,right-arrow_frame_000061_gt_pred.jpg
+right-arrow_frame_000119.jpg,right-arrow,0.101120,right-arrow,0.989041,0.953288,right-arrow_frame_000119_gt_pred.jpg
+right-arrow_frame_000201.jpg,right-arrow,0.116032,right-arrow,0.926507,0.906583,right-arrow_frame_000201_gt_pred.jpg
+stop-signal_frame_000017.jpg,stop-signal,0.012960,stop-signal,0.981051,0.926491,stop-signal_frame_000017_gt_pred.jpg
+stop-signal_frame_000070.jpg,stop-signal,0.021120,stop-signal,0.477517,0.942614,stop-signal_frame_000070_gt_pred.jpg
+stop-signal_frame_000113.jpg,stop-signal,0.035904,stop-signal,0.424441,0.915598,stop-signal_frame_000113_gt_pred.jpg
+stop-signal_frame_000157.jpg,stop-signal,0.062976,,,,stop-signal_frame_000157_gt_pred.jpg
+stop-signal_frame_000233.jpg,stop-signal,0.071232,stop-signal,0.978431,0.967078,stop-signal_frame_000233_gt_pred.jpg

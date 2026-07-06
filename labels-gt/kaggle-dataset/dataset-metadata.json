@@ -1,0 +1,11 @@
+{
+  "title": "YOLO Signals Manual Ground Truth",
+  "id": "jeffreyamc/yolo-signals-manual-gt",
+  "licenses": [
+    {
+      "name": "CC0-1.0"
+    }
+  ],
+  "subtitle": "Manual YOLO bounding boxes for TurtleBot signal detection",
+  "description": "Manual YOLO detection dataset built from turtlebot/labels-gt. Contains images and YOLO txt labels for 4 classes: left-arrow, right-arrow, stop-signal, and meta. Current packaged state: 458 labeled images out of 540 source images, with 366 train images and 92 validation images."
+}

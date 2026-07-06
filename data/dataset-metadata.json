@@ -1,0 +1,11 @@
+{
+  "title": "YOLO Signals Input",
+  "id": "jeffreyamc/yolo-signals-input",
+  "licenses": [
+    {
+      "name": "CC0-1.0"
+    }
+  ],
+  "subtitle": "Traffic signal image folders for YOLO training",
+  "description": "Private dataset created from turtlebot/yolo-signals/input. Contains 520 JPG images organized in three folders: left-arrow, right-arrow, and stop-signal."
+}

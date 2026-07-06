@@ -393,6 +393,7 @@ def do_handshake(sock, robot_addr):
 
 
 def handle_scan(parts):
+    return
     if len(parts) < 8:
         print("[SCAN] Mensaje demasiado corto.")
         return

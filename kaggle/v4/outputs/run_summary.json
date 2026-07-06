@@ -1,0 +1,132 @@
+{
+  "status": "complete",
+  "stage": "complete",
+  "dataset": "jeffreyamc/yolo-signals-manual-gt",
+  "model": "yolo26n.pt",
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal",
+    "meta"
+  ],
+  "augmentation": {
+    "hsv_h": 0.015,
+    "hsv_s": 0.5,
+    "hsv_v": 0.35,
+    "degrees": 8.0,
+    "translate": 0.08,
+    "scale": 0.35,
+    "shear": 2.0,
+    "fliplr": 0.0,
+    "flipud": 0.0,
+    "mosaic": 0.7,
+    "mixup": 0.05,
+    "copy_paste": 0.0,
+    "close_mosaic": 10
+  },
+  "artifacts": [
+    "data_v4_runtime.yaml",
+    "dataset_summary.json",
+    "best.pt",
+    "last.pt",
+    "args.yaml",
+    "results.csv",
+    "results.png",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "labels.jpg",
+    "BoxF1_curve.png",
+    "BoxP_curve.png",
+    "BoxPR_curve.png",
+    "BoxR_curve.png",
+    "train_batch0.jpg",
+    "train_batch1.jpg",
+    "train_batch2.jpg",
+    "val_batch0_labels.jpg",
+    "val_batch0_pred.jpg",
+    "val_batch1_labels.jpg",
+    "val_batch1_pred.jpg",
+    "val_batch2_labels.jpg",
+    "val_batch2_pred.jpg",
+    "metrics.json",
+    "sample_predictions.csv",
+    "qualitative_grid.jpg",
+    "qualitative_predictions.zip",
+    "quantitative_metrics.zip",
+    "qualitative_results.zip",
+    "run_summary.json"
+  ],
+  "data_root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+  "data_yaml": "/kaggle/working/data_v4_runtime.yaml",
+  "dataset_summary": {
+    "root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+    "splits": {
+      "train": {
+        "images": 366,
+        "labels": 366,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 110,
+          "meta": 16,
+          "right-arrow": 101,
+          "stop-signal": 139
+        }
+      },
+      "val": {
+        "images": 92,
+        "labels": 92,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 28,
+          "meta": 4,
+          "right-arrow": 26,
+          "stop-signal": 34
+        }
+      }
+    },
+    "class_counts": {
+      "left-arrow": 138,
+      "right-arrow": 127,
+      "stop-signal": 173,
+      "meta": 20
+    }
+  },
+  "metrics": {
+    "map50": 0.9941187739463602,
+    "map50_95": 0.8603449466521227,
+    "precision": 0.9745221780231422,
+    "recall": 0.9750996742374192,
+    "fitness": 0.8603449466521227,
+    "model": "yolo26n.pt",
+    "imgsz": 640,
+    "epochs_requested": 120,
+    "classes": [
+      "left-arrow",
+      "right-arrow",
+      "stop-signal",
+      "meta"
+    ],
+    "augmentation": {
+      "hsv_h": 0.015,
+      "hsv_s": 0.5,
+      "hsv_v": 0.35,
+      "degrees": 8.0,
+      "translate": 0.08,
+      "scale": 0.35,
+      "shear": 2.0,
+      "fliplr": 0.0,
+      "flipud": 0.0,
+      "mosaic": 0.7,
+      "mixup": 0.05,
+      "copy_paste": 0.0,
+      "close_mosaic": 10
+    },
+    "map50_95_per_class": {
+      "left-arrow": 0.8145356800685646,
+      "right-arrow": 0.8583766757956053,
+      "stop-signal": 0.8318007640776536,
+      "meta": 0.9366666666666668
+    }
+  },
+  "qualitative_sample_count": 16
+}

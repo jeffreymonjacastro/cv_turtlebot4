@@ -1,10 +1,8 @@
 {
   "classes": [
-    "left-arrow",
-    "right-arrow",
-    "stop-signal"
+    "meta"
   ],
-  "total_images": 520,
-  "annotated": 438,
-  "skipped_this_run": 82
+  "total_images": 20,
+  "annotated": 20,
+  "skipped_this_run": 0
 }

@@ -1,0 +1,30 @@
+{
+  "root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+  "splits": {
+    "train": {
+      "images": 350,
+      "labels": 350,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 110,
+        "right-arrow": 101,
+        "stop-signal": 139
+      }
+    },
+    "val": {
+      "images": 88,
+      "labels": 88,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 28,
+        "right-arrow": 26,
+        "stop-signal": 34
+      }
+    }
+  },
+  "class_counts": {
+    "left-arrow": 138,
+    "right-arrow": 127,
+    "stop-signal": 173
+  }
+}
