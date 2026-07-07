@@ -33,6 +33,7 @@ IMG_SIZE = 640
 SIGNAL_CHECK_EVERY_N_FRAMES = 1
 STABLE_SIGNAL_FRAMES = 2
 MIN_SIGNAL_WRITE_INTERVAL_SECONDS = 0.10
+SAVE_ACTIONABLE_COOLDOWN_SECONDS = 1.5
 SCAN_PRINT_INTERVAL_SECONDS = 1.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,10 +44,11 @@ MODEL_CANDIDATES = [
         else None
     ),
     REPO_ROOT / "models" / "signals" / "best.pt",
-    REPO_ROOT / "kaggle" / "v3" / "outputs" / "best.pt",
+    REPO_ROOT / "kaggle" / "v4" / "outputs" / "best.pt",
 ]
 SIGNAL_OUTPUT_DIR = REPO_ROOT / "output" / "signals"
 LATEST_SIGNAL_PATH = SIGNAL_OUTPUT_DIR / "latest_signal.json"
+YOLO_OUTPUT_DIR = REPO_ROOT / "output" / "yolo"
 
 LEFT_ALIASES = ("left", "izquierda")
 RIGHT_ALIASES = ("right", "derecha")
@@ -61,6 +63,8 @@ _model = None
 _last_signal_write_time = 0.0
 _last_signal_signature = None
 _last_write_warning_time = 0.0
+_last_saved_detection_time = 0.0
+_last_saved_detection_direction = None
 
 
 def should_print_scan():
@@ -257,21 +261,33 @@ def draw_detection(img, detection):
     center_x_ratio = detection["center_x_ratio"]
     actionable = detection["actionable"]
     color = detection_color(direction)
-    label = (
-        f"{direction} {confidence:.2f} area={area_ratio:.1%} cx={center_x_ratio:.2f}"
-    )
+    label = f"{direction} {confidence:.2f} {area_ratio:.0%}"
     if actionable:
         label += " ACTION"
 
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    font_scale = 0.38
+    thickness = 1
+    (text_w, text_h), baseline = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+    )
+    label_x = max(0, min(x1, img.shape[1] - text_w - 4))
+    label_y = max(text_h + 4, y1 - 5)
+    cv2.rectangle(
+        img,
+        (label_x, label_y - text_h - baseline - 4),
+        (label_x + text_w + 4, label_y + baseline),
+        (0, 0, 0),
+        -1,
+    )
     cv2.putText(
         img,
         label,
-        (x1, max(20, y1 - 10)),
+        (label_x + 2, label_y - 2),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        font_scale,
         color,
-        2,
+        thickness,
         cv2.LINE_AA,
     )
 
@@ -351,6 +367,38 @@ def detect_signal(img):
     return best
 
 
+def save_actionable_detection(img, detection, source_frame_time):
+    global _last_saved_detection_direction, _last_saved_detection_time
+
+    if detection is None or not detection.get("actionable"):
+        return
+
+    now = time.monotonic()
+    direction = detection["direction"]
+    if (
+        direction == _last_saved_detection_direction
+        and now - _last_saved_detection_time < SAVE_ACTIONABLE_COOLDOWN_SECONDS
+    ):
+        return
+
+    YOLO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    safe_frame_time = str(source_frame_time).replace(".", "_")
+    confidence = int(round(float(detection["confidence"]) * 100))
+    area = int(round(float(detection["area_ratio"]) * 100))
+    filename = (
+        f"{time.strftime('%Y%m%d_%H%M%S')}_{safe_frame_time}_"
+        f"{direction}_conf{confidence}_area{area}.jpg"
+    )
+    output_path = YOLO_OUTPUT_DIR / filename
+
+    if cv2.imwrite(str(output_path), img):
+        _last_saved_detection_direction = direction
+        _last_saved_detection_time = now
+        print(f"[YOLO] Captura guardada: {output_path}")
+    else:
+        print(f"[YOLO] No se pudo guardar captura: {output_path}")
+
+
 def do_handshake(sock, robot_addr):
     sock.settimeout(1.0)
     print(f"[HANDSHAKE] Iniciando con {robot_addr}...")
@@ -426,6 +474,7 @@ def process_signal_from_image(img, sec, nsec):
     draw_detection(img, detection)
     update_stable_signal(detection, source_frame_time)
     draw_status(img)
+    save_actionable_detection(img, detection, source_frame_time)
 
 
 def handle_img(parts):

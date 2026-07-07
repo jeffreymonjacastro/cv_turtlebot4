@@ -9,6 +9,8 @@ import cv2
 
 CLASSES = ["left-arrow", "right-arrow", "stop-signal", "meta"]
 CLASS_TO_ID = {name: idx for idx, name in enumerate(CLASSES)}
+CLASS_ALIASES = {"stop-signal-inverted": "stop-signal"}
+SOURCE_CLASSES = CLASSES + sorted(CLASS_ALIASES)
 
 
 def repo_root():
@@ -17,7 +19,7 @@ def repo_root():
 
 def parse_args():
     root = repo_root()
-    default_source = root / "output" / "input"
+    default_source = root / "data"
     default_out = root / "labels-gt" / "dataset"
     parser = argparse.ArgumentParser(
         description="Annotate one YOLO detection bbox per signal image."
@@ -31,9 +33,9 @@ def parse_args():
     parser.add_argument(
         "--classes",
         nargs="+",
-        choices=CLASSES,
-        default=CLASSES,
-        help="Classes to annotate. Use '--classes meta' for output/input/meta only.",
+        choices=SOURCE_CLASSES,
+        default=SOURCE_CLASSES,
+        help="Source folders to annotate. stop-signal-inverted is labeled as stop-signal.",
     )
     return parser.parse_args()
 
@@ -65,6 +67,10 @@ def split_map(rows, classes, val_ratio, seed):
 
 def output_name(class_name, image_path):
     return f"{class_name}_{image_path.name}"
+
+
+def label_class(class_name):
+    return CLASS_ALIASES.get(class_name, class_name)
 
 
 def label_path(out, split, class_name, image_path):
@@ -215,7 +221,7 @@ def annotate_one(class_name, image_path, split, out, redo):
     dst_image.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(image_path, dst_image)
     label_file.write_text(
-        yolo_line(CLASS_TO_ID[class_name], (x, y, w, h), width, height),
+        yolo_line(CLASS_TO_ID[label_class(class_name)], (x, y, w, h), width, height),
         encoding="utf-8",
     )
     return "annotated"
