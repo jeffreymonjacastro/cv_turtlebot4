@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    profile_name: follow_gap_tuned
+    nav_module: follow_gap
+    base_speed: 0.0722
+    narrow_speed: 0.0255
+    turn_slow_speed: 0.0409
+    corner_slow_speed: 0.0253
+    turn_slow_yaw_threshold: 0.24
+    max_yaw: 0.5422
+    wall_kp: 0.45
+    wall_kd: 0.04
+    front_clear_distance: 0.5241
+    slow_distance: 0.5074
+    recovery_clearance: 0.44
+    side_avoid_distance: 0.32
+    front_corner_avoid_distance: 0.7777
+    front_stop_distance: 0.28
+    front_stop_clear_distance: 0.38
+    side_stop_distance: 0.12
+    side_stop_clear_distance: 0.19
+    avoidance_gain: 0.72
+    gap_bubble_radius_m: 0.3905
+    gap_min_width_deg: 22.7537
+    gap_search_min_deg: -120
+    gap_search_max_deg: 120
+    gap_heading_scale_deg: 75.0631
+    gap_distance_score_cap_m: 3
+    gap_forward_cone_deg: 18
+    robot_width_m: 0.36
+    gap_side_margin_m: 0.0967
+    turn_clearance: 0.4

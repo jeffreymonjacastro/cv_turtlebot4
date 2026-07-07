@@ -79,6 +79,16 @@ The current comparison script writes both files by default. Use
 `--no-write-summary` for read-only console inspection, or `--json` to print the
 full metric payload.
 
+For iteration runs, write explicit summary targets:
+
+```bash
+python3 scripts/compare_nav_profiles.py output/iter_final/*.jsonl \
+  --summary-csv output/iter_final/summary.csv \
+  --summary-json output/iter_final/summary.json \
+  --summary-md output/iter_final/summary.md \
+  --baseline output/iter_harsh_baseline/summary.csv
+```
+
 ---
 
 ## Core metrics
@@ -193,6 +203,26 @@ minimum_side_distance_m = min(minimum_left_distance_m, minimum_right_distance_m)
 ```
 
 If sector values are missing, report `NA`.
+
+Harsh failure scenarios also track:
+
+```text
+corner_risk_count
+front_left_risk_count
+front_right_risk_count
+side_risk_count
+unsafe_yaw_veto_count
+spin_ratio
+yaw_saturation_ratio
+angular_smoothness_cost
+low_progress_ratio
+recovery_entry_count
+recovery_loop_count
+recovery_timeout_count
+state_transition_count_per_min
+minimum_front_left_distance_m
+minimum_front_right_distance_m
+```
 
 ---
 

@@ -584,3 +584,110 @@ Recommended links:
   https://f1tenth-coursekit.readthedocs.io/en/stable/assignments/labs/lab4.html
 - Vector Field Histogram paper:
   https://www.cs.cmu.edu/~motionplanning/papers/sbp_papers/integrated1/borenstein_VFHisto.pdf
+# AGENTS.md Addendum — Offline Benchmark-Driven Navigation Iteration
+
+Add this section to `AGENTS.md` after the validation/diagnostics sections.
+
+## Offline benchmark-driven improvement
+
+The project must support improving navigation without repeatedly using the physical TurtleBot and without relying on Gazebo.
+
+The primary improvement loop is:
+
+```text
+benchmark -> identify problem -> tweak -> benchmark -> decide keep/reject/change direction
+```
+
+Navigation changes should be evaluated through deterministic offline tests before any robot run.
+
+### Offline realism priority
+
+Because ROS simulation is not being used, offline realism must come from:
+
+1. multi-step synthetic LaserScan scenarios
+2. geometry stress cases such as corners, narrow turns, close walls, dead ends, and asymmetric corridors
+3. noisy/invalid/stale sensor data cases
+4. real robot log replay when logs exist
+
+Do not rely only on clean corridor scenarios.
+
+### Benchmark requirements
+
+Offline benchmarks must produce machine-readable logs and summaries:
+
+```text
+output/<run_group>/
+  *.jsonl
+  summary.csv
+  summary.md
+  regressions.md
+```
+
+The JSONL logs should be compatible with the real `reactive_nav_debug.jsonl` style where possible.
+
+### Required failure metrics
+
+Benchmark summaries must include metrics that detect real robot failure modes:
+
+```text
+corner_risk_count
+front_left_risk_count
+front_right_risk_count
+side_risk_count
+spin_ratio
+oscillation_score
+angular_sign_changes_per_min
+yaw_saturation_ratio
+recovery_loop_count
+low_progress_ratio
+unsafe_yaw_veto_count
+```
+
+Safety metrics dominate progress metrics. A profile that moves farther by increasing corner risk or weakening emergency stops must not be promoted.
+
+### Profile promotion rule
+
+A tuned profile may be promoted only if:
+
+1. all safety scenarios pass
+2. stale/invalid LiDAR stops safely
+3. corner risk is reduced or zero
+4. spin/oscillation do not regress
+5. recovery loops do not regress
+6. score improves on the stricter benchmark
+7. regressions are documented
+
+Preserve old safe configs. Do not overwrite them without keeping a copy.
+
+### Iteration logging
+
+For every benchmark-driven tuning session, append a short entry to:
+
+```text
+output/navigation_iteration_log.md
+```
+
+Each entry should include:
+
+```text
+hypothesis
+change
+benchmark directories
+improved metrics
+regressed metrics
+decision: KEEP / REJECT / ADJUST / SPLIT / MEASURE
+```
+
+### Reality boundary
+
+Offline benchmark success does not imply physical readiness.
+
+A final report must explicitly distinguish:
+
+```text
+offline validation
+robot dry-run validation
+physical movement validation
+```
+
+Only physical robot tests can establish actual movement readiness.

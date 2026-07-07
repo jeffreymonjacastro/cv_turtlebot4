@@ -120,6 +120,8 @@ class BehaviorArbiter:
         slow_distance: float = 0.55,
         qr_hold_s: float = 0.8,
         turn_clearance: float = 0.42,
+        front_corner_avoid_distance: float = 0.62,
+        corner_slow_speed: float = 0.035,
         sign_debouncer: Optional[SignDebouncer] = None,
         turn_controller: Optional[TurnController] = None,
     ):
@@ -131,6 +133,8 @@ class BehaviorArbiter:
         self.slow_distance = slow_distance
         self.qr_hold_s = qr_hold_s
         self.turn_clearance = turn_clearance
+        self.front_corner_avoid_distance = front_corner_avoid_distance
+        self.corner_slow_speed = max(0.0, corner_slow_speed)
         self.signs = sign_debouncer or SignDebouncer()
         self.turns = turn_controller or TurnController()
         self._qr_hold_until = 0.0
@@ -182,13 +186,15 @@ class BehaviorArbiter:
         if inputs.nav_suggestion is None:
             return self._output(TwistCommand(), "IDLE", "NO_NAVIGATION_SUGGESTION", True)
 
-        command = self._apply_safety_limits(inputs.nav_suggestion.command, sectors)
+        command, safety_debug = self._apply_safety_limits(inputs.nav_suggestion.command, sectors)
+        debug = dict(inputs.nav_suggestion.debug)
+        debug.update(safety_debug)
         return self._output(
             command,
             inputs.nav_suggestion.mode,
             inputs.nav_suggestion.reason,
             True,
-            inputs.nav_suggestion.debug,
+            debug,
         )
 
     def _emergency_trigger_reason(self, sectors: SectorMap) -> Optional[str]:
@@ -261,20 +267,48 @@ class BehaviorArbiter:
             return f"TURN_{direction}_BLOCKED_{side_name.upper()}_{side:.2f}m"
         return None
 
-    def _apply_safety_limits(self, command: TwistCommand, sectors: SectorMap) -> TwistCommand:
+    def _apply_safety_limits(self, command: TwistCommand, sectors: SectorMap) -> tuple[TwistCommand, Dict[str, float | str | bool]]:
         front = sectors.distance("front")
+        front_left = sectors.distance("front_left")
+        front_right = sectors.distance("front_right")
         left = sectors.distance("left")
         right = sectors.distance("right")
         linear = command.linear_x
         yaw = command.angular_z
+        debug: Dict[str, float | str | bool] = {
+            "safety_input_linear_x": command.linear_x,
+            "safety_input_angular_z": command.angular_z,
+            "corner_yaw_veto": "none",
+            "corner_slowdown": False,
+            "side_yaw_veto": "none",
+        }
 
         if front is not None and front < self.slow_distance:
             linear = min(linear, 0.04)
+            debug["front_slowdown"] = True
+        if front_left is not None and front_left < self.front_corner_avoid_distance:
+            linear = min(linear, self.corner_slow_speed)
+            debug["corner_slowdown"] = True
+            debug["front_left_risk_m"] = front_left
+            if yaw > 0.0:
+                yaw = min(yaw, 0.0)
+                debug["corner_yaw_veto"] = "front_left"
+        if front_right is not None and front_right < self.front_corner_avoid_distance:
+            linear = min(linear, self.corner_slow_speed)
+            debug["corner_slowdown"] = True
+            debug["front_right_risk_m"] = front_right
+            if yaw < 0.0:
+                yaw = max(yaw, 0.0)
+                debug["corner_yaw_veto"] = "front_right"
         if left is not None and left < self.side_stop_distance * 1.6 and yaw > 0.0:
             yaw = min(yaw, 0.0)
+            debug["side_yaw_veto"] = "left"
         if right is not None and right < self.side_stop_distance * 1.6 and yaw < 0.0:
             yaw = max(yaw, 0.0)
-        return TwistCommand(linear, yaw)
+            debug["side_yaw_veto"] = "right"
+        debug["safety_output_linear_x"] = linear
+        debug["safety_output_angular_z"] = yaw
+        return TwistCommand(linear, yaw), debug
 
     def _base_debug(self) -> Dict[str, float | str | bool]:
         debug: Dict[str, float | str | bool] = {

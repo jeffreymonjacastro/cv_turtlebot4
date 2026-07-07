@@ -177,6 +177,7 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("wall_kd", 0.04)
             self.declare_parameter("front_clear_distance", 0.55)
             self.declare_parameter("recovery_clearance", 0.42)
+            self.declare_parameter("corner_slow_speed", 0.035)
             self.declare_parameter("side_avoid_distance", 0.34)
             self.declare_parameter("front_corner_avoid_distance", 0.62)
             self.declare_parameter("avoidance_gain", 0.65)
@@ -338,6 +339,8 @@ def run_ros_node(args=None) -> None:
                 side_stop_clear_distance=self._param_float("side_stop_clear_distance"),
                 emergency_clear_cycles=self._param_int("emergency_clear_cycles"),
                 slow_distance=self._param_float("slow_distance"),
+                front_corner_avoid_distance=self._param_float("front_corner_avoid_distance"),
+                corner_slow_speed=self._param_float("corner_slow_speed"),
                 turn_clearance=self._param_float("turn_clearance"),
                 sign_debouncer=signs,
                 turn_controller=turns,

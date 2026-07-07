@@ -119,6 +119,30 @@ for t in 0..duration:
 
 ## Minimum scenarios
 
+The replay suite also includes harsh temporal failure cases from
+`docs/NAV_FAILURE_SCENARIOS.md`:
+
+```text
+front_left_corner_blocked
+front_right_corner_blocked
+corner_left_approach
+corner_right_approach
+narrow_left_turn
+narrow_right_turn
+asymmetric_corridor_left_close
+asymmetric_corridor_right_close
+wall_too_close_left
+wall_too_close_right
+u_shape_dead_end
+spin_trap_open_space
+noisy_corridor_with_outliers
+oscillatory_corridor
+```
+
+These scenarios are intentionally harsher than the first clean-corridor set and
+are meant to expose circling, corner scrape risk, recovery loops, and noisy
+LiDAR overreaction.
+
 ## `open_corridor`
 
 Geometry:

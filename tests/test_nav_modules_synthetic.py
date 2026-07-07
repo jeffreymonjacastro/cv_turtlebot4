@@ -56,3 +56,44 @@ def test_synthetic_replay_summarizes_stale_lidar_as_safe_stop(tmp_path):
     assert summary["status"] == "PASS"
     assert summary["stale_lidar_stop_count"] > 0
     assert summary["average_published_linear_speed_mps"] == 0.0
+
+
+def test_required_failure_scenarios_are_registered():
+    scenarios = build_scenarios(default_duration_s=1.0)
+
+    for name in (
+        "front_left_corner_blocked",
+        "front_right_corner_blocked",
+        "corner_left_approach",
+        "corner_right_approach",
+        "narrow_left_turn",
+        "narrow_right_turn",
+        "asymmetric_corridor_left_close",
+        "asymmetric_corridor_right_close",
+        "wall_too_close_left",
+        "wall_too_close_right",
+        "u_shape_dead_end",
+        "spin_trap_open_space",
+        "noisy_corridor_with_outliers",
+        "oscillatory_corridor",
+    ):
+        assert name in scenarios
+
+
+def test_corner_veto_replay_removes_front_left_corner_risk(tmp_path):
+    scenario = build_scenarios(default_duration_s=1.0)["front_left_corner_blocked"]
+    params = load_replay_profile("wall_follow")
+
+    path = run_scenario(
+        scenario=scenario,
+        module_name="wall_follow",
+        params=params,
+        out_dir=Path(tmp_path),
+        seed=0,
+        dt_s=0.1,
+        duration_s=1.0,
+    )
+    summary = summarize(path)
+
+    assert summary["corner_risk_count"] == 0
+    assert summary["status"] == "PASS"

@@ -279,6 +279,37 @@ python3 scripts/compare_nav_profiles.py output/sim_runs/*.jsonl
 
 Then inspect the worst scenario logs manually before changing code again.
 
+## Deterministic tuning
+
+Use bounded random search only after the harsh benchmark exposes failure modes:
+
+```bash
+python3 scripts/tune_nav_profiles.py \
+  --nav-modules wall_follow follow_gap \
+  --scenarios all \
+  --trials 100 \
+  --seed 7 \
+  --out-dir output/tuning_runs
+```
+
+The tuner rejects unsafe candidates and only exports new configs such as
+`ubuntu/reactive_nav/configs/wall_follow_tuned.yaml` when a safe candidate beats
+that module's harsh-baseline score.
+
+## Real/debug log analysis
+
+When robot/debug logs exist, analyze and optionally replay them offline:
+
+```bash
+python3 scripts/analyze_robot_failure_log.py output/reactive_nav_debug*.jsonl
+
+python3 scripts/replay_nav_from_log.py output/reactive_nav_debug*.jsonl \
+  --nav-modules wall_follow follow_gap focm \
+  --out-dir output/log_replay_runs
+```
+
+Sector-level log replay is still offline validation only.
+
 ---
 
 ## What to report after each navigation change

@@ -62,6 +62,7 @@ DEFAULT_PROFILE: Dict[str, Any] = {
     "wall_kd": 0.04,
     "front_clear_distance": 0.55,
     "slow_distance": 0.55,
+    "corner_slow_speed": 0.035,
     "recovery_clearance": 0.42,
     "side_avoid_distance": 0.34,
     "front_corner_avoid_distance": 0.62,
@@ -221,11 +222,158 @@ def noisy_corridor_scan(t: float, rng: random.Random) -> FakeLaserScan:
     return FakeLaserScan(ranges=ranges, stamp=t, range_max=scan.range_max)
 
 
+def noisy_corridor_with_outliers_scan(t: float, rng: random.Random) -> FakeLaserScan:
+    left = 0.52 + 0.04 * math.sin(t * 2.1)
+    right = 0.58 + 0.05 * math.sin(t * 2.7 + 1.0)
+    front_left = 0.82 + 0.05 * math.sin(t * 3.3)
+    front_right = 0.86 + 0.05 * math.sin(t * 2.9 + 0.7)
+    scan = corridor_scan(
+        front=1.45 + 0.05 * math.sin(t * 1.7),
+        left=left,
+        right=right,
+        front_left=front_left,
+        front_right=front_right,
+        stamp=t,
+    )
+    ranges = []
+    for index, value in enumerate(scan.ranges):
+        jitter = rng.uniform(-0.045, 0.045)
+        ranges.append(max(scan.range_min, min(scan.range_max, value + jitter)))
+        if (index + int(t * 10)) % 41 == 0:
+            ranges[index] = math.nan
+        elif (index + int(t * 10)) % 47 == 0:
+            ranges[index] = math.inf
+        elif (index + int(t * 10)) % 67 == 0:
+            ranges[index] = 0.05
+    return FakeLaserScan(ranges=ranges, stamp=t, range_max=scan.range_max)
+
+
 def _constant_scan(**kwargs: Any) -> ScanFn:
     def build(t: float, _rng: random.Random) -> FakeLaserScan:
         return corridor_scan(stamp=t, **kwargs)
 
     return build
+
+
+def _approach_corner_scan(*, side: str) -> ScanFn:
+    def build(t: float, _rng: random.Random) -> FakeLaserScan:
+        risk = max(0.24, 1.10 - 0.12 * t)
+        front = max(0.62, 1.65 - 0.05 * t)
+        if side == "left":
+            return corridor_scan(
+                front=front,
+                front_left=risk,
+                front_right=1.20,
+                left=0.92,
+                right=0.36,
+                default=1.7,
+                stamp=t,
+            )
+        return corridor_scan(
+            front=front,
+            front_left=1.20,
+            front_right=risk,
+            left=0.36,
+            right=0.92,
+            default=1.7,
+            stamp=t,
+        )
+
+    return build
+
+
+def _asymmetric_corridor_scan(*, close_side: str) -> ScanFn:
+    def build(t: float, _rng: random.Random) -> FakeLaserScan:
+        close = 0.23 + 0.03 * math.sin(t * 1.8)
+        far = 0.92 + 0.05 * math.sin(t * 1.2 + 0.4)
+        if close_side == "left":
+            return corridor_scan(
+                front=1.80,
+                front_left=0.72,
+                front_right=1.10,
+                left=close,
+                right=far,
+                stamp=t,
+            )
+        return corridor_scan(
+            front=1.80,
+            front_left=1.10,
+            front_right=0.72,
+            left=far,
+            right=close,
+            stamp=t,
+        )
+
+    return build
+
+
+def _wall_too_close_scan(*, side: str) -> ScanFn:
+    def build(t: float, _rng: random.Random) -> FakeLaserScan:
+        close = 0.135 + 0.015 * math.sin(t * 1.5)
+        if side == "left":
+            return corridor_scan(
+                front=1.35,
+                front_left=0.55,
+                front_right=0.95,
+                left=close,
+                right=0.75,
+                stamp=t,
+            )
+        return corridor_scan(
+            front=1.35,
+            front_left=0.95,
+            front_right=0.55,
+            left=0.75,
+            right=close,
+            stamp=t,
+        )
+
+    return build
+
+
+def _u_shape_dead_end_scan(t: float, _rng: random.Random) -> FakeLaserScan:
+    side_opening = min(0.58, 0.26 + max(0.0, t - 4.0) * 0.04)
+    return corridor_scan(
+        front=0.33,
+        front_center=0.33,
+        front_left=0.31,
+        front_right=0.31,
+        left=side_opening,
+        right=0.30,
+        rear=1.40,
+        default=0.48,
+        stamp=t,
+    )
+
+
+def _spin_trap_scan(t: float, _rng: random.Random) -> FakeLaserScan:
+    # Alternating open-side bias in otherwise open space can expose controllers
+    # that circle instead of stabilizing forward motion.
+    bias = 0.16 if int(t / 0.5) % 2 == 0 else -0.16
+    return corridor_scan(
+        front=2.40,
+        front_left=1.80,
+        front_right=1.80,
+        left=1.40 + bias,
+        right=1.40 - bias,
+        rear=2.0,
+        default=2.6,
+        stamp=t,
+    )
+
+
+def _oscillatory_corridor_scan(t: float, _rng: random.Random) -> FakeLaserScan:
+    sign = 1.0 if int(t / 0.4) % 2 == 0 else -1.0
+    return corridor_scan(
+        front=1.65,
+        front_left=0.88 - 0.08 * sign,
+        front_right=0.88 + 0.08 * sign,
+        left=0.52 + 0.18 * sign,
+        right=0.52 - 0.18 * sign,
+        rear=1.0,
+        default=1.7,
+        stamp=t,
+    )
 
 
 def _dead_end_scan(t: float, _rng: random.Random) -> FakeLaserScan:
@@ -382,6 +530,92 @@ def build_scenarios(default_duration_s: float) -> Dict[str, Scenario]:
             signal_fn=_fresh_sign("left", start_s=0.5, end_s=999.0, event_id="repeated_left_same_event"),
             expected={"turn_direction": "left", "max_turn_count": 1},
         ),
+        "front_left_corner_blocked": Scenario(
+            name="front_left_corner_blocked",
+            duration_s=default_duration_s,
+            scan_fn=_constant_scan(front=1.25, front_left=0.42, front_right=1.35, left=1.05, right=0.30),
+            expected={"corner_risk_count": 0, "front_left_risk": True, "avoid_positive_yaw": True},
+        ),
+        "front_right_corner_blocked": Scenario(
+            name="front_right_corner_blocked",
+            duration_s=default_duration_s,
+            scan_fn=_constant_scan(front=1.25, front_left=1.35, front_right=0.42, left=0.30, right=1.05),
+            expected={"corner_risk_count": 0, "front_right_risk": True, "avoid_negative_yaw": True},
+        ),
+        "corner_left_approach": Scenario(
+            name="corner_left_approach",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=_approach_corner_scan(side="left"),
+            expected={"corner_risk_count": 0, "slowdown_before_corner": True},
+        ),
+        "corner_right_approach": Scenario(
+            name="corner_right_approach",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=_approach_corner_scan(side="right"),
+            expected={"corner_risk_count": 0, "slowdown_before_corner": True},
+        ),
+        "narrow_left_turn": Scenario(
+            name="narrow_left_turn",
+            duration_s=default_duration_s,
+            scan_fn=_constant_scan(front=1.10, front_left=0.34, front_right=0.80, left=0.34, right=0.50),
+            signal_fn=_fresh_sign("left", start_s=0.5, end_s=2.5, event_id="narrow_left_turn"),
+            expected={"turn_count": 0, "blocked_turn": True, "corner_risk_count": 0},
+        ),
+        "narrow_right_turn": Scenario(
+            name="narrow_right_turn",
+            duration_s=default_duration_s,
+            scan_fn=_constant_scan(front=1.10, front_left=0.80, front_right=0.34, left=0.50, right=0.34),
+            signal_fn=_fresh_sign("right", start_s=0.5, end_s=2.5, event_id="narrow_right_turn"),
+            expected={"turn_count": 0, "blocked_turn": True, "corner_risk_count": 0},
+        ),
+        "asymmetric_corridor_left_close": Scenario(
+            name="asymmetric_corridor_left_close",
+            duration_s=default_duration_s,
+            scan_fn=_asymmetric_corridor_scan(close_side="left"),
+            expected={"side_risk_count": 0, "yaw_sign": "negative"},
+        ),
+        "asymmetric_corridor_right_close": Scenario(
+            name="asymmetric_corridor_right_close",
+            duration_s=default_duration_s,
+            scan_fn=_asymmetric_corridor_scan(close_side="right"),
+            expected={"side_risk_count": 0, "yaw_sign": "positive"},
+        ),
+        "wall_too_close_left": Scenario(
+            name="wall_too_close_left",
+            duration_s=default_duration_s,
+            scan_fn=_wall_too_close_scan(side="left"),
+            expected={"side_risk_count": 0, "turn_away": "right"},
+        ),
+        "wall_too_close_right": Scenario(
+            name="wall_too_close_right",
+            duration_s=default_duration_s,
+            scan_fn=_wall_too_close_scan(side="right"),
+            expected={"side_risk_count": 0, "turn_away": "left"},
+        ),
+        "u_shape_dead_end": Scenario(
+            name="u_shape_dead_end",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=_u_shape_dead_end_scan,
+            expected={"requires_recovery": True, "recovery_loop_count_max": 1, "spin_ratio_max": 0.35},
+        ),
+        "spin_trap_open_space": Scenario(
+            name="spin_trap_open_space",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=_spin_trap_scan,
+            expected={"positive_progress": True, "spin_ratio_max": 0.20, "oscillation_score_max": 35.0},
+        ),
+        "noisy_corridor_with_outliers": Scenario(
+            name="noisy_corridor_with_outliers",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=noisy_corridor_with_outliers_scan,
+            expected={"positive_progress": True, "corner_risk_count": 0, "oscillation_score_max": 35.0},
+        ),
+        "oscillatory_corridor": Scenario(
+            name="oscillatory_corridor",
+            duration_s=max(default_duration_s, 10.0),
+            scan_fn=_oscillatory_corridor_scan,
+            expected={"oscillation_score_max": 35.0, "angular_sign_changes_per_min_max": 45.0},
+        ),
     }
 
 
@@ -475,6 +709,8 @@ def build_arbiter(params: Dict[str, Any]) -> BehaviorArbiter:
         side_stop_clear_distance=_coerce_float(params, "side_stop_clear_distance"),
         emergency_clear_cycles=_coerce_int(params, "emergency_clear_cycles"),
         slow_distance=_coerce_float(params, "slow_distance"),
+        front_corner_avoid_distance=_coerce_float(params, "front_corner_avoid_distance"),
+        corner_slow_speed=_coerce_float(params, "corner_slow_speed"),
         qr_hold_s=_coerce_float(params, "qr_hold_s"),
         turn_clearance=_coerce_float(params, "turn_clearance"),
         sign_debouncer=signs,
