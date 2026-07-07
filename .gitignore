@@ -4,6 +4,10 @@ output/
 __pycache__/
 *.py[cod]
 *.pyc.*
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 #labels-gt/
 #kaggle/**/outputs/
