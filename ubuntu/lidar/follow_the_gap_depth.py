@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """
 Autonomous Reactive Navigation Node for TurtleBot 4 (Create 3 base, OAK-D camera)
-using Stereo Depth only. Works on ROS 2 JAZZY.
+using Stereo Depth for local planning AND a 2D LiDAR as a mandatory safety layer.
+Works on ROS 2 JAZZY.
 
 Subscribes:  /oakd/stereo/image_raw   (sensor_msgs/Image, depth in mm or meters)
+             /scan                    (sensor_msgs/LaserScan, real 2D LiDAR)
 Publishes:   /cmd_vel                 (geometry_msgs/TwistStamped)
 
-Designed to simulate local planning and obstacle avoidance using a multi-criteria cost
-function and geometric gap-width estimation in meters.
+Architecture (two independent layers):
+  1. PLANNER (camera, depth-only): Follow-the-Gap over a virtual scan built
+     from the OAK-D depth image. Decides *where* to go (best gap / heading)
+     and a nominal speed. This layer only sees what is inside the camera's
+     narrow field of view.
+  2. SAFETY (LiDAR, 360-degree real range data): every command produced by
+     the planner is passed through apply_lidar_safety() before publishing.
+     This layer can only brake, slow down, or cancel a turn -- it can never
+     make the robot go faster or turn harder than the planner requested.
+     Its job is to catch walls/obstacles that are out of the camera's FOV
+     (to the side, behind a corner, etc).
+  A safety_watchdog timer independently forces a zero-velocity command if
+  either sensor stream goes stale, regardless of what the planner/safety
+  layers computed on their last valid cycle.
 """
 
 import os
@@ -19,7 +33,7 @@ import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 from geometry_msgs.msg import TwistStamped
 from cv_bridge import CvBridge
 
@@ -31,26 +45,26 @@ class FollowTheGapDepth(Node):
         # ---- Declare ROS 2 Parameters ----
         self.declare_parameter("depth_topic", "/oakd/stereo/image_raw")
         self.declare_parameter("cmd_topic", "/cmd_vel")
-        self.declare_parameter("number_of_bins", 40)
+        self.declare_parameter("number_of_bins", 72)
         self.declare_parameter("roi_top", 280)         # Top row of ROI (assuming 640x480)
         self.declare_parameter("roi_bottom", 440)      # Bottom row of ROI
         self.declare_parameter("max_depth", 4.0)       # Maximum reliable depth (m)
         self.declare_parameter("min_depth", 0.4)       # Minimum depth (m)
-        self.declare_parameter("bubble_radius_min", 0.22) # Safe min bubble (m) (robot radius 20cm + 2cm)
-        self.declare_parameter("bubble_radius_max", 0.60) # Max bubble for close obstacles (m)
+        self.declare_parameter("bubble_radius_min", 0.35) # Safe min bubble (m)
+        self.declare_parameter("bubble_radius_max", 0.90) # Max bubble for close obstacles (m)
         self.declare_parameter("bubble_k", 0.15)       # Scaling factor for dynamic bubble
         self.declare_parameter("kp", 1.2)              # Proportional gain for yaw steering
-        self.declare_parameter("max_linear_speed", 0.35)  # m/s
-        self.declare_parameter("min_linear_speed", 0.05)  # m/s
-        self.declare_parameter("max_angular_speed", 1.2)  # rad/s
+        self.declare_parameter("max_linear_speed", 0.20)  # m/s (reduced for safe testing)
+        self.declare_parameter("min_linear_speed", 0.03)  # m/s (reduced for safe testing)
+        self.declare_parameter("max_angular_speed", 0.75)  # rad/s (reduced for safe testing)
         self.declare_parameter("distance_weight", 1.0) # alpha
         self.declare_parameter("gap_weight", 0.8)      # beta
         self.declare_parameter("steering_weight", 0.5)  # gamma
         self.declare_parameter("closeness_weight", 0.6) # delta
         self.declare_parameter("temporal_filter_alpha", 0.25)
         self.declare_parameter("median_kernel", 3)     # 1D median filter kernel size for bins
-        self.declare_parameter("front_stop_distance", 0.50) # Stop and realign if wall closer than this (m)
-        self.declare_parameter("minimum_gap_width", 0.50)  # Min traversable width for 40cm robot + margins (m)
+        self.declare_parameter("front_stop_distance", 0.65) # Stop and realign if wall closer than this (m)
+        self.declare_parameter("minimum_gap_width", 0.70)  # Min traversable width (m)
         self.declare_parameter("hfov_deg", 69.0)       # OAK-D RGB-Depth Horizontal FOV
         self.declare_parameter("show_debug", False)
         self.declare_parameter("telemetry_port", 6000)
@@ -59,6 +73,16 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("scan_array_stride", 1)
         self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
         self.declare_parameter("pairing_code", "ROBOT_A_2")
+
+        # ---- LiDAR safety-layer parameters (mandatory obstacle layer) ----
+        self.declare_parameter("scan_topic", "/scan")
+        self.declare_parameter("lidar_timeout", 1.0)     # s; no /scan -> watchdog stop
+        self.declare_parameter("camera_timeout", 1.0)    # s; no depth frames -> watchdog stop
+        self.declare_parameter("lidar_front_stop", 0.30)     # m; hard frontal stop distance
+        self.declare_parameter("lidar_slow_distance", 0.70)  # m; start slowing down frontally
+        self.declare_parameter("lidar_side_stop", 0.22)      # m; too close to a side wall -> stop advancing
+        self.declare_parameter("lidar_turn_stop", 0.35)      # m; block turning into a near diagonal/side wall
+        self.declare_parameter("front_sector_deg", 35.0)     # deg; front sector half-angle (-deg..+deg)
 
         # ---- Retrieve Parameters ----
         g = lambda n: self.get_parameter(n).value
@@ -95,6 +119,16 @@ class FollowTheGapDepth(Node):
         self.robot_name = str(g("robot_name"))
         self.pairing_code = str(g("pairing_code"))
 
+        # ---- LiDAR safety-layer parameters ----
+        self.scan_topic = str(g("scan_topic"))
+        self.lidar_timeout = float(g("lidar_timeout"))
+        self.camera_timeout = float(g("camera_timeout"))
+        self.lidar_front_stop = float(g("lidar_front_stop"))
+        self.lidar_slow_distance = float(g("lidar_slow_distance"))
+        self.lidar_side_stop = float(g("lidar_side_stop"))
+        self.lidar_turn_stop = float(g("lidar_turn_stop"))
+        self.front_sector_deg = float(g("front_sector_deg"))
+
         # ---- UDP socket and thread ----
         self.ros_domain_id = int(os.environ.get("ROS_DOMAIN_ID", "2"))
         self.authorized_addr = None
@@ -117,15 +151,32 @@ class FollowTheGapDepth(Node):
         self.last_target_angle = 0.0  # For steering temporal smoothing
         self.last_depth_msg_time = None
 
+        # ---- LiDAR internal state (populated by scan_callback) ----
+        self.last_scan_ranges = None          # np.ndarray of raw ranges (meters)
+        self.last_scan_msg_time = None        # monotonic time of last /scan message
+        self.last_scan_angle_min = 0.0
+        self.last_scan_angle_increment = 1.0
+        self.last_scan_range_min = 0.02
+        self.last_scan_range_max = 30.0
+
         # ---- Subscriber & Publisher ----
         self.sub_depth = self.create_subscription(
             Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data
         )
+        self.sub_scan = self.create_subscription(
+            LaserScan, self.scan_topic, self.scan_callback, qos_profile_sensor_data
+        )
         self.pub_cmd = self.create_publisher(TwistStamped, self.cmd_topic, 10)
         self.status_timer = self.create_timer(5.0, self._status_check)
 
+        # Independent safety watchdog: runs on its own timer (faster than the
+        # camera callback rate) so a dead camera or dead LiDAR topic cannot
+        # leave the robot coasting on the last command it ever received.
+        self.watchdog_timer = self.create_timer(0.15, self.safety_watchdog)
+
         self.get_logger().info("Follow-the-Gap Stereo Depth Navigation Node Initialized.")
         self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
+        self.get_logger().info(f"Subscribed to LiDAR: {self.scan_topic}")
         self.get_logger().info(f"Publishing TwistStamped to: {self.cmd_topic}")
 
     def depth_callback(self, msg: Image):
@@ -196,7 +247,9 @@ class FollowTheGapDepth(Node):
             self.get_logger().warn("NO VALID GAP FOUND - STOPPING")
             speed, yaw = 0.0, 0.0
 
-        # Safety Override: If frontal clearance is too low
+        # Safety Override (camera layer): If frontal clearance seen by the
+        # depth camera is too low. This only protects against obstacles that
+        # are inside the OAK-D's field of view.
         # Central bins are the middle 10% of the scan
         mid = self.num_bins // 2
         span = max(1, self.num_bins // 10)
@@ -205,14 +258,26 @@ class FollowTheGapDepth(Node):
             self.get_logger().warn(f"FRONT BLOCKED: {front_clearance:.2f}m < {self.front_stop}m. Stopping.")
             speed, yaw = 0.0, 0.0
 
+        # ---------------------------------------------------------------
+        # MANDATORY LIDAR SAFETY LAYER
+        # This is the final authority before any command reaches the robot.
+        # It uses the real 360-degree LiDAR to catch walls/obstacles that
+        # are outside the camera's narrow field of view (to the side,
+        # behind a corner, etc), which the planner above cannot see at all.
+        # It can only brake, slow down, or cancel a turn -- never speed up.
+        # ---------------------------------------------------------------
+        speed, yaw = self.apply_lidar_safety(speed, yaw)
+
         self.publish_cmd(speed, yaw)
 
         # 8. Send UDP Telemetry
         # We simulate LIDAR structure for compatibility with recibidor_datos.py
-        # Sectors: left (0:13), center (13:27), right (27:40)
-        left_clear = float(np.min(virtual_scan[0:13]))
-        front_clear = float(np.min(virtual_scan[13:27]))
-        right_clear = float(np.min(virtual_scan[27:40]))
+        # Sectors: left / center / right, split proportionally to num_bins
+        # (kept dynamic so it stays correct if number_of_bins is reconfigured).
+        third = max(1, self.num_bins // 3)
+        left_clear = float(np.min(virtual_scan[0:third]))
+        front_clear = float(np.min(virtual_scan[third : 2 * third]))
+        right_clear = float(np.min(virtual_scan[2 * third : self.num_bins]))
         
         target_angle_deg = float(np.degrees(self.last_target_angle))
         
@@ -256,11 +321,23 @@ class FollowTheGapDepth(Node):
             self.draw_debug(processed_depth, virtual_scan, cleaned_scan, best_bin, scores, debug_gaps, speed, yaw)
 
     def preprocess_depth(self, cv_depth: np.ndarray) -> np.ndarray:
-        """Cleans NaNs, Infs and limits depth values."""
-        # Replace NaN, Inf, and non-positive depth with max_depth
-        invalid_mask = np.isnan(cv_depth) | np.isinf(cv_depth) | (cv_depth <= 0.0)
+        """
+        Cleans NaNs, Infs and non-positive depth values.
+
+        SAFETY-CRITICAL CHANGE: invalid pixels (NaN, Inf, or <= 0) are stereo
+        failures -- texture-less walls, glare, out-of-range, sensor noise.
+        They must NEVER be interpreted as free space. The previous version
+        replaced them with max_depth (i.e. "clear path ahead"), which is
+        exactly backwards: a light-colored or overexposed wall that the
+        stereo matcher fails on would look like open corridor. Invalid
+        pixels are now conservatively treated as the closest possible
+        obstacle (min_depth), so a sensor failure looks like "something is
+        right in front of me" and the planner slows/stops instead of
+        confidently driving into unknown space.
+        """
+        invalid_mask = ~np.isfinite(cv_depth) | (cv_depth <= 0.0)
         cleaned = np.copy(cv_depth)
-        cleaned[invalid_mask] = self.max_depth
+        cleaned[invalid_mask] = self.min_depth
         # Clip ranges between min and max depth
         return np.clip(cleaned, self.min_depth, self.max_depth)
 
@@ -405,6 +482,207 @@ class FollowTheGapDepth(Node):
         speed = np.clip(speed, self.min_v, self.max_v)
 
         return float(speed), float(yaw)
+
+    # =====================================================================
+    # LIDAR SAFETY LAYER
+    # =====================================================================
+    # The methods below implement an independent, mandatory safety layer
+    # built on top of a real 2D LiDAR (sensor_msgs/LaserScan on /scan).
+    # The camera-based planner above only reasons about what is inside the
+    # OAK-D's ~69 degree horizontal field of view; it is structurally blind
+    # to walls that are to the side, behind a corner, or otherwise outside
+    # that cone. The LiDAR normally covers 360 degrees around the robot, so
+    # it is used here strictly as a brake/veto: it can zero the speed, scale
+    # it down, or cancel a turn, but it never invents extra speed or steering.
+    # =====================================================================
+
+    def scan_callback(self, msg: LaserScan):
+        """
+        Stores the latest LaserScan so apply_lidar_safety()/sector_min() can
+        use it. Kept intentionally minimal (no heavy processing here) so the
+        safety layer always sees the freshest possible range data.
+        """
+        self.last_scan_msg_time = time.monotonic()
+        # range_min/range_max define the sensor's trustworthy measurement
+        # envelope; fall back to sane defaults if the driver reports zeros.
+        self.last_scan_range_min = float(msg.range_min) if msg.range_min > 0.0 else 0.02
+        self.last_scan_range_max = float(msg.range_max) if msg.range_max > 0.0 else 30.0
+        self.last_scan_angle_min = float(msg.angle_min)
+        self.last_scan_angle_increment = (
+            float(msg.angle_increment) if msg.angle_increment != 0.0 else 1e-6
+        )
+        self.last_scan_ranges = np.asarray(msg.ranges, dtype=np.float32)
+
+    def sector_min(self, start_deg: float, end_deg: float) -> float:
+        """
+        Returns the closest *trustworthy* range (meters) within an angular
+        sector of the most recent LaserScan.
+
+        Convention: 0 deg = straight ahead, positive = left (CCW), negative
+        = right, matching REP-103 / standard LaserScan orientation.
+
+        Invalid-data handling (deliberately conservative, mirrors the depth
+        camera policy in preprocess_depth):
+          - NaN samples            -> excluded from the min (no information).
+          - value < range_min      -> sensor below its measurable floor,
+                                       which typically means an object is
+                                       extremely close; clamped to range_min
+                                       (treated as a close obstacle, NOT
+                                       ignored and NOT treated as free).
+          - value > range_max/Inf  -> standard "no return within sensor
+                                       range" reading; this is legitimate
+                                       information that the sector is clear
+                                       up to range_max, so it is clamped to
+                                       range_max (free), NOT max-range-as-huge.
+          - sector has zero valid  -> unknown sector; return 0.0 (worst case)
+            samples at all            so callers fail safe (stop) instead of
+                                       assuming clearance with no evidence.
+        """
+        if self.last_scan_ranges is None or self.last_scan_ranges.size == 0:
+            return 0.0  # No LiDAR data yet -> cannot verify safety -> unsafe.
+
+        ranges = self.last_scan_ranges
+        n = ranges.size
+        angle_min = self.last_scan_angle_min
+        angle_inc = self.last_scan_angle_increment
+
+        start_rad = np.radians(start_deg)
+        end_rad = np.radians(end_deg)
+
+        i_start = int(round((start_rad - angle_min) / angle_inc))
+        i_end = int(round((end_rad - angle_min) / angle_inc))
+        if i_start > i_end:
+            i_start, i_end = i_end, i_start
+        i_start = max(0, min(n - 1, i_start))
+        i_end = max(0, min(n - 1, i_end))
+
+        sector = ranges[i_start : i_end + 1]
+        if sector.size == 0:
+            return 0.0
+
+        valid = sector[~np.isnan(sector)]
+        if valid.size == 0:
+            return 0.0  # Entire sector unreadable -> treat as unsafe.
+
+        range_min = self.last_scan_range_min
+        range_max = self.last_scan_range_max
+
+        too_close_mask = valid < range_min
+        far_mask = (~too_close_mask) & (np.isinf(valid) | (valid > range_max))
+
+        processed = np.where(too_close_mask, range_min, valid)
+        processed = np.where(far_mask, range_max, processed)
+
+        return float(np.min(processed))
+
+    def apply_lidar_safety(self, speed: float, yaw: float):
+        """
+        Mandatory LiDAR safety gate. Every (speed, yaw) command computed by
+        the camera-based planner MUST pass through this function before
+        publish_cmd() is called. It can only reduce/zero speed or cancel a
+        turn -- it never increases what the planner requested.
+
+        Sectors checked (degrees, 0 = forward, + = left, - = right):
+          front       : -front_sector_deg .. +front_sector_deg
+          front-left  :  20 .. 80
+          front-right : -80 .. -20
+          left        :  70 .. 110
+          right       : -110 .. -70
+        """
+        # Layer 0: no LiDAR data at all -> cannot verify safety -> full stop.
+        if self.last_scan_ranges is None:
+            return 0.0, 0.0
+
+        # Layer 0b: LiDAR data present but stale (sensor/driver died) -> stop.
+        # (The independent safety_watchdog timer also catches this even if
+        # the camera stops calling this function at all.)
+        now = time.monotonic()
+        if self.last_scan_msg_time is None or (now - self.last_scan_msg_time) > self.lidar_timeout:
+            self.get_logger().warn("[LIDAR SAFETY] /scan data is stale -> STOP")
+            return 0.0, 0.0
+
+        front = self.sector_min(-self.front_sector_deg, self.front_sector_deg)
+        front_left = self.sector_min(20.0, 80.0)
+        front_right = self.sector_min(-80.0, -20.0)
+        left = self.sector_min(70.0, 110.0)
+        right = self.sector_min(-110.0, -70.0)
+
+        safe_speed = speed
+        safe_yaw = yaw
+
+        # --- Layer 1: Hard frontal stop -------------------------------
+        # A wall/obstacle is directly ahead within the hard stop distance:
+        # full stop, no partial measures.
+        if front <= self.lidar_front_stop:
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] FRONT STOP: {front:.2f}m <= {self.lidar_front_stop:.2f}m"
+            )
+            return 0.0, 0.0
+
+        # --- Layer 2: Progressive frontal slowdown ---------------------
+        # Approaching a frontal wall: scale the commanded speed down
+        # smoothly between lidar_slow_distance (start slowing) and
+        # lidar_front_stop (full stop), regardless of what the camera
+        # planner asked for.
+        if front < self.lidar_slow_distance:
+            span = max(self.lidar_slow_distance - self.lidar_front_stop, 1e-3)
+            scale = float(np.clip((front - self.lidar_front_stop) / span, 0.0, 1.0))
+            safe_speed = min(safe_speed, self.max_v * scale)
+
+        # --- Layer 3: Lateral wall hugging -------------------------------
+        # Too close to a side wall while moving: stop advancing so the
+        # robot doesn't scrape/squeeze along a wall the camera can't see.
+        if left <= self.lidar_side_stop or right <= self.lidar_side_stop:
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] SIDE TOO CLOSE: left={left:.2f}m right={right:.2f}m "
+                f"<= {self.lidar_side_stop:.2f}m -> stopping advance"
+            )
+            safe_speed = 0.0
+
+        # --- Layer 4: Block dangerous turns -------------------------------
+        # Never steer into a lateral/diagonal wall that is too close, even
+        # if the planner requested that direction.
+        if safe_yaw > 0.0 and (front_left <= self.lidar_turn_stop or left <= self.lidar_turn_stop):
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] LEFT TURN BLOCKED: front_left={front_left:.2f}m "
+                f"left={left:.2f}m <= {self.lidar_turn_stop:.2f}m"
+            )
+            safe_yaw = 0.0
+        if safe_yaw < 0.0 and (front_right <= self.lidar_turn_stop or right <= self.lidar_turn_stop):
+            self.get_logger().warn(
+                f"[LIDAR SAFETY] RIGHT TURN BLOCKED: front_right={front_right:.2f}m "
+                f"right={right:.2f}m <= {self.lidar_turn_stop:.2f}m"
+            )
+            safe_yaw = 0.0
+
+        safe_speed = float(np.clip(safe_speed, 0.0, self.max_v))
+        safe_yaw = float(np.clip(safe_yaw, -self.max_w, self.max_w))
+        return safe_speed, safe_yaw
+
+    def safety_watchdog(self):
+        """
+        Independent safety timer (runs regardless of camera/LiDAR callback
+        activity). If the depth camera or the LiDAR stop delivering fresh
+        data -- topic died, node crashed, network hiccup -- this forces a
+        zero-velocity command immediately. Without this, a dead camera
+        would mean depth_callback (and therefore apply_lidar_safety and
+        publish_cmd) simply stop being called, leaving the robot coasting
+        forever on the last command it ever published.
+        """
+        now = time.monotonic()
+        reasons = []
+
+        if self.last_depth_msg_time is None or (now - self.last_depth_msg_time) > self.camera_timeout:
+            reasons.append("camera_stale_or_missing")
+
+        if self.last_scan_msg_time is None or (now - self.last_scan_msg_time) > self.lidar_timeout:
+            reasons.append("lidar_stale_or_missing")
+
+        if reasons:
+            reason_str = ",".join(reasons)
+            self.get_logger().warn(f"[WATCHDOG] Forcing ZERO velocity: {reason_str}")
+            self.publish_cmd(0.0, 0.0)
+            self._send_log("WARN", f"watchdog_stop reasons={reason_str}")
 
     def publish_cmd(self, speed: float, yaw: float):
         """Publishes the command velocity TwistStamped message."""
@@ -600,6 +878,17 @@ class FollowTheGapDepth(Node):
                 f"No depth frames received on {self.depth_topic}; "
                 f"state={topic_state}; depth_publishers={depth_publishers}; "
                 f"published_image_topics={','.join(published_image_topics) if published_image_topics else 'none'}"
+            )
+            self.get_logger().warn(msg)
+            self._send_log("WARN", msg)
+
+        scan_publishers = len(self.get_publishers_info_by_topic(self.scan_topic))
+        if self.last_scan_msg_time is None:
+            topic_state = "no_lidar_publisher" if scan_publishers == 0 else "lidar_publisher_no_frames"
+            msg = (
+                f"No LiDAR scans received on {self.scan_topic}; state={topic_state}; "
+                f"lidar_publishers={scan_publishers}. Robot will remain stopped "
+                f"(mandatory LiDAR safety layer requires live /scan data)."
             )
             self.get_logger().warn(msg)
             self._send_log("WARN", msg)
