@@ -250,8 +250,11 @@ class FollowGapNavigation:
         *,
         base_speed: float = 0.10,
         narrow_speed: float = 0.06,
+        turn_slow_speed: float = 0.07,
+        turn_slow_yaw_threshold: float = 22.0,
         max_yaw: float = 0.65,
         front_clear_distance: float = 0.55,
+        slow_distance: float = 0.55,
         recovery_clearance: float = 0.42,
         gap_bubble_radius_m: float = 0.30,
         gap_min_width_deg: float = 18.0,
@@ -266,8 +269,12 @@ class FollowGapNavigation:
     ):
         self.base_speed = base_speed
         self.narrow_speed = narrow_speed
+        self.turn_slow_speed = min(base_speed, max(0.0, turn_slow_speed))
+        threshold = max(0.0, turn_slow_yaw_threshold)
+        self.turn_slow_yaw_threshold = math.degrees(threshold) if threshold <= math.pi else threshold
         self.max_yaw = max_yaw
         self.front_clear_distance = front_clear_distance
+        self.slow_distance = slow_distance
         self.recovery_clearance = recovery_clearance
         self.gap_bubble_radius_m = gap_bubble_radius_m
         self.gap_min_width_deg = gap_min_width_deg
@@ -316,14 +323,19 @@ class FollowGapNavigation:
     def _linear_speed(self, front: float | None, heading_deg: float, min_distance_m: float) -> float:
         if front is None:
             return 0.0
-        if abs(heading_deg) > 45.0:
+        if abs(heading_deg) > 60.0:
             return 0.0
+        speed = self.base_speed
         if front < self.front_clear_distance and abs(heading_deg) > self.gap_forward_cone_deg:
             return 0.0
         if front < self.front_clear_distance or min_distance_m < self.front_clear_distance:
-            return self.narrow_speed if abs(heading_deg) <= self.gap_forward_cone_deg else 0.0
-        turn_scale = max(0.35, 1.0 - abs(heading_deg) / 100.0)
-        return max(0.0, min(self.base_speed, self.base_speed * turn_scale))
+            speed = min(speed, self.narrow_speed)
+        if front < self.slow_distance or min_distance_m < self.slow_distance:
+            speed = min(speed, self.turn_slow_speed)
+        if abs(heading_deg) > self.turn_slow_yaw_threshold:
+            speed = min(speed, self.turn_slow_speed)
+        turn_scale = max(0.55, 1.0 - abs(heading_deg) / 140.0)
+        return max(0.0, min(speed, self.base_speed * turn_scale))
 
     def _debug(
         self,
@@ -344,6 +356,7 @@ class FollowGapNavigation:
             "gap_count": float(gap_count),
             "front": front if front is not None else -1.0,
             "algorithm": "follow_gap",
+            "turn_slow_speed": self.turn_slow_speed,
         }
 
 

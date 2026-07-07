@@ -113,7 +113,10 @@ class BehaviorArbiter:
         self,
         *,
         front_stop_distance: float = 0.32,
+        front_stop_clear_distance: float = 0.40,
         side_stop_distance: float = 0.14,
+        side_stop_clear_distance: float = 0.20,
+        emergency_clear_cycles: int = 3,
         slow_distance: float = 0.55,
         qr_hold_s: float = 0.8,
         turn_clearance: float = 0.42,
@@ -121,59 +124,66 @@ class BehaviorArbiter:
         turn_controller: Optional[TurnController] = None,
     ):
         self.front_stop_distance = front_stop_distance
+        self.front_stop_clear_distance = max(front_stop_distance, front_stop_clear_distance)
         self.side_stop_distance = side_stop_distance
+        self.side_stop_clear_distance = max(side_stop_distance, side_stop_clear_distance)
+        self.emergency_clear_cycles = max(1, emergency_clear_cycles)
         self.slow_distance = slow_distance
         self.qr_hold_s = qr_hold_s
         self.turn_clearance = turn_clearance
         self.signs = sign_debouncer or SignDebouncer()
         self.turns = turn_controller or TurnController()
         self._qr_hold_until = 0.0
+        self._emergency_active = False
+        self._emergency_clear_counter = 0
+        self._emergency_last_reason = "NONE"
+        self._emergency_trigger_count = 0
 
     def decide(self, inputs: ArbiterInput) -> ArbiterOutput:
         sectors = inputs.sectors
         now = inputs.now
 
         if sectors is None:
-            return ArbiterOutput(TwistCommand(), "SENSOR_CHECK", "NO_LIDAR_SECTOR_MAP", False)
+            return self._output(TwistCommand(), "SENSOR_CHECK", "NO_LIDAR_SECTOR_MAP", False)
         if not inputs.lidar_fresh:
-            return ArbiterOutput(TwistCommand(), "EMERGENCY_STOP", "LIDAR_STALE_OR_NO_CALLBACK", True)
+            return self._output(TwistCommand(), "EMERGENCY_STOP", "LIDAR_STALE_OR_NO_CALLBACK", True)
         if sectors.valid_count == 0:
-            return ArbiterOutput(TwistCommand(), "EMERGENCY_STOP", "NO_VALID_LIDAR_POINTS", True)
+            return self._output(TwistCommand(), "EMERGENCY_STOP", "NO_VALID_LIDAR_POINTS", True)
 
-        emergency = self._emergency_reason(sectors)
-        if emergency:
-            return ArbiterOutput(TwistCommand(), "EMERGENCY_STOP", emergency, True)
+        emergency = self._update_emergency_state(sectors)
+        if emergency is not None:
+            return self._output(TwistCommand(), "EMERGENCY_STOP", emergency, True)
 
         if self.turns.active:
             step = self.turns.step(sectors, now)
             if not step.active:
                 self.signs.start_cooldown(now)
-            return ArbiterOutput(step.command, step.state, step.reason, True)
+            return self._output(step.command, step.state, step.reason, True, step.debug)
 
         if inputs.qr_recent:
             self._qr_hold_until = max(self._qr_hold_until, now + self.qr_hold_s)
         if now < self._qr_hold_until:
-            return ArbiterOutput(TwistCommand(), "QR_SCAN", "QR_VISIBLE_OR_RECENTLY_LOGGED", True)
+            return self._output(TwistCommand(), "QR_SCAN", "QR_VISIBLE_OR_RECENTLY_LOGGED", True)
 
         confirmed = self.signs.update(inputs.signal, now)
         if confirmed in ("LEFT", "RIGHT"):
             turn_block = self._turn_block_reason(sectors, confirmed)
             if turn_block:
-                return ArbiterOutput(TwistCommand(), "SIGN_CANDIDATE", turn_block, True)
+                return self._output(TwistCommand(), "SIGN_CANDIDATE", turn_block, True)
             if self.turns.start(confirmed, now):
                 self.signs.consume(inputs.signal)
                 step = self.turns.step(sectors, now)
-                return ArbiterOutput(step.command, step.state, f"SIGN_CONFIRMED_{confirmed}", True)
+                return self._output(step.command, step.state, f"SIGN_CONFIRMED_{confirmed}", True, step.debug)
         if confirmed == "STOP":
             self.signs.consume(inputs.signal)
             self.signs.start_cooldown(now)
-            return ArbiterOutput(TwistCommand(), "MANUAL_STOP", "STOP_SIGN_CONFIRMED", True)
+            return self._output(TwistCommand(), "MANUAL_STOP", "STOP_SIGN_CONFIRMED", True)
 
         if inputs.nav_suggestion is None:
-            return ArbiterOutput(TwistCommand(), "IDLE", "NO_NAVIGATION_SUGGESTION", True)
+            return self._output(TwistCommand(), "IDLE", "NO_NAVIGATION_SUGGESTION", True)
 
         command = self._apply_safety_limits(inputs.nav_suggestion.command, sectors)
-        return ArbiterOutput(
+        return self._output(
             command,
             inputs.nav_suggestion.mode,
             inputs.nav_suggestion.reason,
@@ -181,7 +191,7 @@ class BehaviorArbiter:
             inputs.nav_suggestion.debug,
         )
 
-    def _emergency_reason(self, sectors: SectorMap) -> Optional[str]:
+    def _emergency_trigger_reason(self, sectors: SectorMap) -> Optional[str]:
         front_center = sectors.distance("front_center")
         front = sectors.distance("front")
         left = sectors.distance("left")
@@ -194,6 +204,51 @@ class BehaviorArbiter:
             return f"LEFT_SIDE_TOO_CLOSE_{left:.2f}m"
         if right is not None and right < self.side_stop_distance:
             return f"RIGHT_SIDE_TOO_CLOSE_{right:.2f}m"
+        return None
+
+    def _emergency_clear_ready(self, sectors: SectorMap) -> bool:
+        front_center = sectors.distance("front_center")
+        front = sectors.distance("front")
+        left = sectors.distance("left")
+        right = sectors.distance("right")
+        checks = []
+        if front_center is not None:
+            checks.append(front_center >= self.front_stop_clear_distance)
+        if front is not None:
+            checks.append(front >= self.front_stop_clear_distance)
+        if left is not None:
+            checks.append(left >= self.side_stop_clear_distance)
+        if right is not None:
+            checks.append(right >= self.side_stop_clear_distance)
+        return all(checks) if checks else False
+
+    def _update_emergency_state(self, sectors: SectorMap) -> Optional[str]:
+        trigger_reason = self._emergency_trigger_reason(sectors)
+        if self._emergency_active:
+            if trigger_reason:
+                self._emergency_clear_counter = 0
+                self._emergency_last_reason = trigger_reason
+                return trigger_reason
+            if self._emergency_clear_ready(sectors):
+                self._emergency_clear_counter += 1
+                if self._emergency_clear_counter >= self.emergency_clear_cycles:
+                    self._emergency_active = False
+                    self._emergency_clear_counter = 0
+                    self._emergency_last_reason = "CLEARED"
+                    return None
+                return (
+                    "EMERGENCY_LATCH_CLEARING_"
+                    f"{self._emergency_clear_counter}_OF_{self.emergency_clear_cycles}"
+                )
+            self._emergency_clear_counter = 0
+            return "EMERGENCY_LATCH_WAIT_CLEAR_THRESHOLDS"
+
+        if trigger_reason:
+            self._emergency_active = True
+            self._emergency_clear_counter = 0
+            self._emergency_last_reason = trigger_reason
+            self._emergency_trigger_count += 1
+            return trigger_reason
         return None
 
     def _turn_block_reason(self, sectors: SectorMap, direction: str) -> Optional[str]:
@@ -215,10 +270,32 @@ class BehaviorArbiter:
 
         if front is not None and front < self.slow_distance:
             linear = min(linear, 0.04)
-        if front is not None and front < self.front_stop_distance + 0.08:
-            linear = min(linear, 0.0)
         if left is not None and left < self.side_stop_distance * 1.6 and yaw > 0.0:
             yaw = min(yaw, 0.0)
         if right is not None and right < self.side_stop_distance * 1.6 and yaw < 0.0:
             yaw = max(yaw, 0.0)
         return TwistCommand(linear, yaw)
+
+    def _base_debug(self) -> Dict[str, float | str | bool]:
+        debug: Dict[str, float | str | bool] = {
+            "emergency_active": self._emergency_active,
+            "emergency_trigger_reason": self._emergency_last_reason,
+            "emergency_clear_counter": float(self._emergency_clear_counter),
+            "emergency_trigger_count": float(self._emergency_trigger_count),
+            "sign_cooldown_remaining_s": self.signs.cooldown_remaining,
+        }
+        debug.update(self.turns.snapshot())
+        return debug
+
+    def _output(
+        self,
+        command: TwistCommand,
+        state: str,
+        reason: str,
+        publish_motion: bool,
+        debug: Optional[Dict[str, float | str | bool]] = None,
+    ) -> ArbiterOutput:
+        merged = self._base_debug()
+        if debug:
+            merged.update(debug)
+        return ArbiterOutput(command, state, reason, publish_motion, merged)

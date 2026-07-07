@@ -1,69 +1,75 @@
-# What To Run Locally vs On The TurtleBot
+# Reactive Nav: What Runs on macOS vs on the TurtleBot
 
-This is the short operator checklist for the reactive navigation stack.
+This is the operator guide for the stabilized reactive navigation stack.
 
-## Local Computer (macOS)
+The split is intentional:
 
-Run these commands from the repo root on your Mac:
+- macOS runs the receivers and live camera view.
+- the TurtleBot runs ROS 2, reactive navigation, safety arbitration, QR logging, and wheel commands.
+
+## 1. What to run on your Mac
+
+Run everything from the repo root:
 
 ```bash
 cd /Users/katharsis/Developer/cv/turtle4
-```
-
-Create and activate a local virtual environment:
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 ```
 
-Run the diagnostics receiver:
+### Live robot camera window
 
-```bash
-export ROBOT_PORT=6612
-python3 win/lidar/recibidor.py <robot_ip>
-```
-
-Run the YOLO detector/receiver:
+This is the official live view:
 
 ```bash
 export ROBOT_PORT=6610
 python3 win/yolo/recibidor.py <robot_ip>
 ```
 
-This script opens an OpenCV display window, so run it from the Mac desktop
-session, not from an SSH session into the TurtleBot.
+That window shows what the robot camera sees and, by default, also runs YOLO and writes:
 
-Equivalent environment-variable form:
-
-```bash
-export ROBOT_IP=<robot_ip>
-export ROBOT_PORT=6610
-python3 win/yolo/recibidor.py
+```text
+output/signals/latest_signal.json
 ```
 
-Run the QR telemetry receiver, if you are using the separate QR sender:
+If you only want the live camera without YOLO inference:
+
+```bash
+export ROBOT_PORT=6610
+python3 win/yolo/recibidor.py <robot_ip> --view-only
+```
+
+### Nav state and stop-reason receiver
+
+Run this in parallel to watch state transitions, stop reasons, and motion decisions:
+
+```bash
+export ROBOT_PORT=6612
+python3 win/lidar/recibidor.py <robot_ip>
+```
+
+### Optional QR receiver
+
+Only use this if you are running the separate QR telemetry sender:
 
 ```bash
 export ROBOT_PORT=6611
 python3 win/detect_qr/recibidor.py <robot_ip>
 ```
 
-Do not run this with the new navigator:
+### Do not run this with the new stack
 
 ```bash
 python3 win/yolo/enviador.py
 ```
 
-`win/yolo/enviador.py` sends wheel commands directly. The new navigation stack
-expects YOLO to write symbolic state only, and the robot-side arbiter decides
-movement.
+That script sends wheel commands directly. The new architecture expects YOLO to publish symbolic sign state only.
 
-## TurtleBot
+## 2. What to run on the TurtleBot
 
-Prepare the ROS environment:
+Prepare the environment:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -71,11 +77,40 @@ export ROS_DOMAIN_ID=2
 cd /home/ubuntu
 ```
 
-Run dry-run mode first. This verifies sensors, diagnostics, YOLO state reading,
-QR logging setup, and command decisions without moving the robot.
+The reactive navigator must be run on the TurtleBot.
+
+## 3. Navigation module selection
+
+You can switch the local navigation module explicitly with ROS parameters:
+
+```text
+-p nav_module:=wall_follow
+-p nav_module:=follow_gap
+-p nav_module:=focm
+```
+
+Named ROS profiles live in:
+
+```text
+ubuntu/reactive_nav/configs/
+```
+
+Current starter profiles:
+
+```text
+wall_follow_safe.yaml
+wall_follow_fast.yaml
+follow_gap_safe.yaml
+focm_safe.yaml
+```
+
+## 4. Recommended no-motion validation
+
+Start with dry-run mode so the robot does not move:
 
 ```bash
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_safe.yaml \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p telemetry_port:=6612 \
@@ -86,10 +121,19 @@ python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --r
   -p collision_image_dir:=/home/ubuntu/output/collision_frames
 ```
 
-Only when the robot is in open space and ready for movement, run:
+While that is running, confirm on the Mac:
+
+1. `win/yolo/recibidor.py` shows live camera frames.
+2. `win/lidar/recibidor.py` shows state, reason, and command updates.
+3. `output/signals/latest_signal.json` is updating when signs are visible.
+
+## 5. Movement run with a named profile
+
+Only run this when the robot is in a safe physical test area:
 
 ```bash
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_fast.yaml \
   -p dry_run:=false \
   -p enable_motion:=true \
   -p telemetry_port:=6612 \
@@ -97,84 +141,101 @@ python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --r
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
   -p collision_log_path:=/home/ubuntu/output/collision_events.jsonl \
-  -p collision_image_dir:=/home/ubuntu/output/collision_frames \
-  -p collision_cooldown_s:=2.0 \
-  -p max_yaw:=0.65 \
-  -p wall_kp:=0.45 \
-  -p wall_kd:=0.03 \
-  -p base_speed:=0.04 \
-  -p narrow_speed:=0.025 \
-  -p front_clear_distance:=0.70 \
-  -p front_corner_avoid_distance:=0.70 \
-  -p side_avoid_distance:=0.38 \
-  -p avoidance_gain:=0.85
+  -p collision_image_dir:=/home/ubuntu/output/collision_frames
 ```
 
-Expected movement-mode logs:
+## 6. Movement run with raw `-p` flags
 
-```text
-dry_run=False enable_motion=True
-state=CORRIDOR_FOLLOW
-cmd=(0.040,...)
-scan_count increasing
-lidar_age < 0.5s
-```
-
-Persistent debug records are written on the TurtleBot to:
+Use this when you want to override a profile or test a module quickly:
 
 ```bash
+python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
+  -p profile_name:=manual_follow_gap_test \
+  -p nav_module:=follow_gap \
+  -p dry_run:=false \
+  -p enable_motion:=true \
+  -p telemetry_port:=6612 \
+  -p base_speed:=0.12 \
+  -p narrow_speed:=0.05 \
+  -p turn_slow_speed:=0.07 \
+  -p front_stop_distance:=0.28 \
+  -p front_stop_clear_distance:=0.38 \
+  -p side_stop_distance:=0.12 \
+  -p side_stop_clear_distance:=0.19 \
+  -p emergency_clear_cycles:=3 \
+  -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
+  -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl
+```
+
+## 7. What the logs mean
+
+Persistent run logs are written on the TurtleBot to:
+
+```text
 /home/ubuntu/output/reactive_nav_debug.jsonl
 ```
 
-Create 3 hazard/collision events are written to:
+They now include:
 
-```bash
+- `profile_name`
+- `nav.module`
+- `turn.turn_phase`
+- `turn.turn_direction`
+- `turn.align_error`
+- `turn.align_yaw_clamped`
+- `turn.turn_completed_reason`
+- `emergency.emergency_active`
+- `emergency.emergency_trigger_reason`
+- `emergency.emergency_clear_counter`
+- `emergency.emergency_trigger_count`
+
+Collision-triggered evidence is still written to:
+
+```text
 /home/ubuntu/output/collision_events.jsonl
-```
-
-When a camera frame is available, event images are saved in:
-
-```bash
 /home/ubuntu/output/collision_frames/
 ```
 
-After a run, inspect the latest records:
+## 8. Evaluation loop
+
+Use the same flow for every profile:
+
+1. run one named profile
+2. collect `/home/ubuntu/output/reactive_nav_debug.jsonl`
+3. copy it to the Mac
+4. summarize it with the evaluator
+5. compare the metrics across profiles
+
+Example:
 
 ```bash
-tail -n 20 /home/ubuntu/output/reactive_nav_debug.jsonl
+scp turtlebot4:/home/ubuntu/output/reactive_nav_debug.jsonl output/wall_follow_fast_run1.jsonl
+python3 scripts/evaluate_nav_profiles.py output/wall_follow_fast_run1.jsonl
 ```
 
-For left/right bias, look at:
-
-```text
-lidar.left_minus_right_m
-nav.debug.error
-nav.debug.d_error
-nav.debug.yaw_pd
-nav.debug.yaw_avoid
-nav.suggested_angular_z
-command.requested_angular_z
-command.published_angular_z
-nav.debug.yaw_veto
-```
-
-To copy the log back to your Mac and summarize it:
+Compare multiple runs at once:
 
 ```bash
-scp turtlebot4:/home/ubuntu/output/reactive_nav_debug.jsonl output/reactive_nav_debug.jsonl
-python3 scripts/analyze_reactive_nav_log.py output/reactive_nav_debug.jsonl
+python3 scripts/evaluate_nav_profiles.py \
+  output/wall_follow_fast_run1.jsonl \
+  output/follow_gap_safe_run1.jsonl \
+  output/focm_safe_run1.jsonl
 ```
 
-To copy collision events and images:
+Reported metrics:
 
-```bash
-scp turtlebot4:/home/ubuntu/output/collision_events.jsonl output/collision_events.jsonl
-scp -r turtlebot4:/home/ubuntu/output/collision_frames output/collision_frames
-```
+- total runtime
+- time spent in each state
+- emergency-stop count
+- emergency-stop total time
+- average published linear speed during `CORRIDOR_FOLLOW`
+- recovery time ratio
+- turn count
+- average turn completion time
 
-## If Commands Are Logged But The Robot Does Not Move
+## 9. If the robot does not move
 
-On the TurtleBot, while the navigator is running:
+If the navigator logs non-zero commands but the base does not move, run on the TurtleBot:
 
 ```bash
 ros2 topic info /cmd_vel --verbose
@@ -183,26 +244,13 @@ ros2 topic info /cmd_vel_unstamped --verbose
 ros2 topic echo /cmd_vel_unstamped --once
 ```
 
-Interpretation:
-
-```text
-/cmd_vel non-zero, /cmd_vel_unstamped zero or silent:
-  create3_repub or the TurtleBot command bridge is blocking motion.
-
-/cmd_vel zero, navigator logs non-zero:
-  another publisher may be overriding, or the navigator is not publishing to
-  the expected topic.
-
-/cmd_vel_unstamped non-zero, robot still stationary:
-  check Create 3 safety/mobility state.
-```
-
-Useful safety/mobility checks:
+Also check:
 
 ```bash
 ros2 topic echo /hazard_detection --once
 ros2 topic echo /wheel_status --once
 ros2 topic echo /dock_status --once
-ros2 topic echo /interface_buttons --once
 ros2 topic echo /diagnostics --once
 ```
+
+If motion is blocked, keep the JSONL log, collision log, and live camera view together. That is the minimum evidence set for debugging the next run.

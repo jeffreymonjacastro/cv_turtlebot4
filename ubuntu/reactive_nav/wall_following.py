@@ -50,11 +50,14 @@ class WallFollowNavigation:
         self,
         base_speed: float = 0.10,
         narrow_speed: float = 0.06,
+        turn_slow_speed: float = 0.07,
+        turn_slow_yaw_threshold: float = 0.24,
         max_yaw: float = 0.65,
         kp: float = 0.45,
         kd: float = 0.04,
         desired_wall_distance: float = 0.42,
         front_clear_distance: float = 0.55,
+        slow_distance: float = 0.55,
         recovery_clearance: float = 0.42,
         side_avoid_distance: float = 0.34,
         front_corner_avoid_distance: float = 0.62,
@@ -63,11 +66,14 @@ class WallFollowNavigation:
     ):
         self.base_speed = base_speed
         self.narrow_speed = narrow_speed
+        self.turn_slow_speed = min(base_speed, max(0.0, turn_slow_speed))
+        self.turn_slow_yaw_threshold = max(0.0, turn_slow_yaw_threshold)
         self.max_yaw = max_yaw
         self.kp = kp
         self.kd = kd
         self.desired_wall_distance = desired_wall_distance
         self.front_clear_distance = front_clear_distance
+        self.slow_distance = slow_distance
         self.recovery_clearance = recovery_clearance
         self.side_avoid_distance = side_avoid_distance
         self.front_corner_avoid_distance = front_corner_avoid_distance
@@ -96,10 +102,7 @@ class WallFollowNavigation:
         debug: Dict[str, float | str] = {"front": front}
 
         if left is not None and right is not None:
-            corridor_width = left + right
             error = left - right
-            if corridor_width < 0.9:
-                linear = self.narrow_speed
             mode = "CORRIDOR_FOLLOW"
         elif left is not None:
             error = left - self.desired_wall_distance
@@ -122,27 +125,33 @@ class WallFollowNavigation:
             if front_left < self.front_corner_avoid_distance:
                 pressure = (self.front_corner_avoid_distance - front_left) / self.front_corner_avoid_distance
                 yaw_avoid -= self.avoidance_gain * pressure
-                linear = min(linear, self.narrow_speed)
+                linear = min(linear, self.turn_slow_speed)
                 debug["front_left_pressure"] = pressure
             if front_right < self.front_corner_avoid_distance:
                 pressure = (self.front_corner_avoid_distance - front_right) / self.front_corner_avoid_distance
                 yaw_avoid += self.avoidance_gain * pressure
-                linear = min(linear, self.narrow_speed)
+                linear = min(linear, self.turn_slow_speed)
                 debug["front_right_pressure"] = pressure
 
         if left is not None and left < self.side_avoid_distance:
             pressure = (self.side_avoid_distance - left) / self.side_avoid_distance
             yaw_avoid -= self.avoidance_gain * pressure
-            linear = min(linear, self.narrow_speed)
+            linear = min(linear, self.turn_slow_speed)
             debug["left_side_pressure"] = pressure
         if right is not None and right < self.side_avoid_distance:
             pressure = (self.side_avoid_distance - right) / self.side_avoid_distance
             yaw_avoid += self.avoidance_gain * pressure
-            linear = min(linear, self.narrow_speed)
+            linear = min(linear, self.turn_slow_speed)
             debug["right_side_pressure"] = pressure
 
         yaw = yaw_pd + yaw_avoid
         yaw = max(-self.max_yaw, min(self.max_yaw, yaw))
+        if front < self.slow_distance:
+            linear = min(linear, self.turn_slow_speed)
+            debug["speed_policy"] = "front_below_slow_distance"
+        if abs(yaw) > self.turn_slow_yaw_threshold:
+            linear = min(linear, self.turn_slow_speed)
+            debug["speed_policy"] = "high_yaw_turn"
 
         if front_left is not None and front_left < self.side_avoid_distance and yaw > 0.0:
             yaw = min(yaw, 0.0)
@@ -157,6 +166,7 @@ class WallFollowNavigation:
                 "d_error": d_error,
                 "yaw_pd": yaw_pd,
                 "yaw_avoid": yaw_avoid,
+                "turn_slow_speed": self.turn_slow_speed,
                 "control_sign": "positive_error_turns_left_negative_error_turns_right",
             }
         )

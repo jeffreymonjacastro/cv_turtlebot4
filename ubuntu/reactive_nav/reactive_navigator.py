@@ -109,6 +109,40 @@ def read_signal_state(
     )
 
 
+def load_profile_parameters(path: str | Path) -> Dict[str, Any]:
+    """Load the flat ros__parameters block from a simple ROS YAML profile."""
+
+    profile_path = Path(path)
+    parameters: Dict[str, Any] = {}
+    inside_ros_parameters = False
+    for raw_line in profile_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if line.strip() == "ros__parameters:":
+            inside_ros_parameters = True
+            continue
+        if not inside_ros_parameters:
+            continue
+        if not raw_line.startswith("    ") or ":" not in line:
+            continue
+        key, value = line.strip().split(":", 1)
+        parsed = value.strip()
+        if not parsed:
+            continue
+        lowered = parsed.lower()
+        if lowered in ("true", "false"):
+            parameters[key] = lowered == "true"
+            continue
+        try:
+            numeric = float(parsed)
+        except ValueError:
+            parameters[key] = parsed.strip("'\"")
+            continue
+        parameters[key] = int(numeric) if numeric.is_integer() else numeric
+    return parameters
+
+
 def run_ros_node(args=None) -> None:
     import rclpy
     from rclpy.executors import ExternalShutdownException
@@ -131,10 +165,13 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("publish_zero_in_dry_run", True)
             self.declare_parameter("control_hz", 15.0)
             self.declare_parameter("max_scan_age_s", 0.50)
+            self.declare_parameter("profile_name", "wall_follow_safe")
             self.declare_parameter("nav_module", "wall_follow")
 
             self.declare_parameter("base_speed", 0.10)
             self.declare_parameter("narrow_speed", 0.06)
+            self.declare_parameter("turn_slow_speed", 0.07)
+            self.declare_parameter("turn_slow_yaw_threshold", 0.24)
             self.declare_parameter("max_yaw", 0.65)
             self.declare_parameter("wall_kp", 0.45)
             self.declare_parameter("wall_kd", 0.04)
@@ -156,10 +193,21 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("focm_goal_heading_deg", 0.0)
 
             self.declare_parameter("front_stop_distance", 0.32)
+            self.declare_parameter("front_stop_clear_distance", 0.40)
             self.declare_parameter("side_stop_distance", 0.14)
+            self.declare_parameter("side_stop_clear_distance", 0.20)
+            self.declare_parameter("emergency_clear_cycles", 3)
             self.declare_parameter("slow_distance", 0.55)
             self.declare_parameter("turn_clearance", 0.42)
             self.declare_parameter("turn_speed", 0.45)
+            self.declare_parameter("turn_degrees", 90.0)
+            self.declare_parameter("settle_seconds", 0.25)
+            self.declare_parameter("align_max_seconds", 1.6)
+            self.declare_parameter("align_yaw_limit", 0.28)
+            self.declare_parameter("align_gain", 0.45)
+            self.declare_parameter("align_error_threshold", 0.08)
+            self.declare_parameter("align_stable_cycles", 3)
+            self.declare_parameter("align_same_direction_only", True)
 
             self.declare_parameter("signal_state_path", "output/signals/latest_signal.json")
             self.declare_parameter("max_signal_age_s", 0.8)
@@ -200,6 +248,8 @@ def run_ros_node(args=None) -> None:
             self.enable_motion = self._param_bool("enable_motion")
             self.publish_zero_in_dry_run = self._param_bool("publish_zero_in_dry_run")
             self.max_scan_age_s = self._param_float("max_scan_age_s")
+            self.profile_name = self._param_str("profile_name")
+            self.nav_module_name = self._param_str("nav_module")
             self.signal_state_path = Path(self._param_str("signal_state_path"))
             self.max_signal_age_s = self._param_float("max_signal_age_s")
             self.max_image_age_s = self._param_float("max_image_age_s")
@@ -237,10 +287,13 @@ def run_ros_node(args=None) -> None:
             nav_kwargs = {
                 "base_speed": self._param_float("base_speed"),
                 "narrow_speed": self._param_float("narrow_speed"),
+                "turn_slow_speed": self._param_float("turn_slow_speed"),
+                "turn_slow_yaw_threshold": self._param_float("turn_slow_yaw_threshold"),
                 "max_yaw": self._param_float("max_yaw"),
                 "kp": self._param_float("wall_kp"),
                 "kd": self._param_float("wall_kd"),
                 "front_clear_distance": self._param_float("front_clear_distance"),
+                "slow_distance": self._param_float("slow_distance"),
                 "recovery_clearance": self._param_float("recovery_clearance"),
                 "side_avoid_distance": self._param_float("side_avoid_distance"),
                 "front_corner_avoid_distance": self._param_float("front_corner_avoid_distance"),
@@ -257,7 +310,7 @@ def run_ros_node(args=None) -> None:
                 "focm_alpha": self._param_float("focm_alpha"),
                 "focm_goal_heading_deg": self._param_float("focm_goal_heading_deg"),
             }
-            self.nav_module = create_navigation_module(self._param_str("nav_module"), **nav_kwargs)
+            self.nav_module = create_navigation_module(self.nav_module_name, **nav_kwargs)
 
             signs = SignDebouncer(
                 confirm_window=self._param_int("sign_confirm_window"),
@@ -266,10 +319,24 @@ def run_ros_node(args=None) -> None:
                 min_area_ratio=self._param_float("sign_min_area_ratio"),
                 cooldown_s=self._param_float("sign_cooldown_s"),
             )
-            turns = TurnController(turn_speed=self._param_float("turn_speed"))
+            turns = TurnController(
+                turn_speed=self._param_float("turn_speed"),
+                turn_degrees=self._param_float("turn_degrees"),
+                settle_seconds=self._param_float("settle_seconds"),
+                align_max_seconds=self._param_float("align_max_seconds"),
+                align_yaw_limit=self._param_float("align_yaw_limit"),
+                align_gain=self._param_float("align_gain"),
+                align_error_threshold=self._param_float("align_error_threshold"),
+                align_stable_cycles=self._param_int("align_stable_cycles"),
+                align_same_direction_only=self._param_bool("align_same_direction_only"),
+            )
+            self.turn_controller = turns
             self.arbiter = BehaviorArbiter(
                 front_stop_distance=self._param_float("front_stop_distance"),
+                front_stop_clear_distance=self._param_float("front_stop_clear_distance"),
                 side_stop_distance=self._param_float("side_stop_distance"),
+                side_stop_clear_distance=self._param_float("side_stop_clear_distance"),
+                emergency_clear_cycles=self._param_int("emergency_clear_cycles"),
                 slow_distance=self._param_float("slow_distance"),
                 turn_clearance=self._param_float("turn_clearance"),
                 sign_debouncer=signs,
@@ -316,7 +383,7 @@ def run_ros_node(args=None) -> None:
                 "INFO",
                 "[INIT] reactive navigator started "
                 f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
-                f"cmd={self._cmd_message_kind}:{self.cmd_topic} nav={self.nav_module.name} "
+                f"cmd={self._cmd_message_kind}:{self.cmd_topic} profile={self.profile_name} nav={self.nav_module.name} "
                 f"log={self._param_str('persistent_log_path') if self._param_bool('persistent_log_enabled') else 'disabled'}",
             )
 
@@ -671,7 +738,18 @@ def run_ros_node(args=None) -> None:
 
             nav_debug = dict(nav_suggestion.debug) if nav_suggestion is not None else {}
             output_debug = dict(output.debug) if output.debug else {}
+            turn_debug = self._json_clean(self.turn_controller.snapshot())
+            emergency_debug = {
+                key: output_debug.get(key)
+                for key in (
+                    "emergency_active",
+                    "emergency_trigger_reason",
+                    "emergency_clear_counter",
+                    "emergency_trigger_count",
+                )
+            }
             record = {
+                "profile_name": self.profile_name,
                 "state": output.state,
                 "reason": output.reason,
                 "previous_state": self.last_state,
@@ -708,6 +786,8 @@ def run_ros_node(args=None) -> None:
                     "debug": self._json_clean(nav_debug),
                 },
                 "arbiter_debug": self._json_clean(output_debug),
+                "turn": turn_debug,
+                "emergency": self._json_clean(emergency_debug),
                 "lidar": {
                     "valid_count": sectors.valid_count if sectors is not None else 0,
                     "total_count": sectors.total_count if sectors is not None else 0,
@@ -813,13 +893,16 @@ def run_ros_node(args=None) -> None:
                 self.diag.log(
                     "INFO",
                     "[STATE] "
+                    f"profile={self.profile_name} nav={self.nav_module.name} "
                     f"state={output.state} reason={output.reason} "
                     f"cmd=({output.command.linear_x:.3f},{output.command.angular_z:.3f}) "
                     f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
                     f"scan_topic={self.current_scan_topic or 'none'} scan_count={self.scan_count} "
                     f"lidar_age={self._fmt_age(freshness.lidar_age_s)} "
                     f"image_age={self._fmt_age(freshness.image_age_s)} "
-                    f"signal={self.last_signal.direction}/{self.last_signal.reason}",
+                    f"signal={self.last_signal.direction}/{self.last_signal.reason} "
+                    f"emergency={output.debug.get('emergency_trigger_reason', 'NONE')}"
+                    f"/{int(float(output.debug.get('emergency_clear_counter', 0.0) or 0.0))}",
                 )
 
             if sectors is not None:
@@ -898,11 +981,13 @@ def run_self_test() -> None:
         from .behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState
         from .lidar_sectors import extract_sectors
         from .qr_logger import QRLogger
+        from .turn_controller import TurnController
         from .wall_following import NavigationObservation, create_navigation_module
     except ImportError:  # pragma: no cover
         from behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState
         from lidar_sectors import extract_sectors
         from qr_logger import QRLogger
+        from turn_controller import TurnController
         from wall_following import NavigationObservation, create_navigation_module
 
     class FakeScan:
@@ -989,11 +1074,94 @@ def run_self_test() -> None:
     )
     assert decision.state == "EMERGENCY_STOP"
 
+    class FakeTurnSectors:
+        valid_count = 100
+        points = ()
+
+        def __init__(self, distances):
+            self._distances = distances
+
+        def distance(self, name, default=None):
+            return self._distances.get(name, default)
+
+    turn_controller = TurnController(
+        turn_speed=0.45,
+        turn_degrees=90.0,
+        settle_seconds=0.05,
+        align_max_seconds=0.5,
+        align_error_threshold=0.05,
+        align_stable_cycles=2,
+        align_same_direction_only=True,
+    )
+    started = time.monotonic()
+    assert turn_controller.start("LEFT", started)
+    settle_step = turn_controller.step(FakeTurnSectors({}), started + turn_controller.turn_seconds + 0.01)
+    assert settle_step.state == "SETTLING_AFTER_TURN"
+    align_step = turn_controller.step(
+        FakeTurnSectors({"left": 1.0, "right": 0.4, "front": 1.0}),
+        started + turn_controller.turn_seconds + turn_controller.settle_seconds + 0.02,
+    )
+    assert align_step.state == "ALIGNING_AFTER_TURN"
+    assert align_step.command.linear_x == 0.0
+    assert align_step.command.angular_z >= 0.0
+    assert bool(align_step.debug["align_yaw_clamped"]) is True
+
+    hysteresis_arbiter = BehaviorArbiter(
+        front_stop_distance=0.30,
+        front_stop_clear_distance=0.40,
+        side_stop_distance=0.10,
+        side_stop_clear_distance=0.18,
+        emergency_clear_cycles=3,
+    )
+    trigger = hysteresis_arbiter.decide(
+        ArbiterInput(
+            sectors=FakeTurnSectors({"front": 0.25, "front_center": 0.25, "left": 0.50, "right": 0.50}),
+            lidar_fresh=True,
+            nav_suggestion=suggestion,
+            signal=SignalState(),
+            qr_recent=False,
+            now=time.monotonic(),
+        )
+    )
+    assert trigger.state == "EMERGENCY_STOP"
+    safe_sectors = FakeTurnSectors({"front": 0.60, "front_center": 0.60, "left": 0.50, "right": 0.50})
+    for _ in range(2):
+        hold = hysteresis_arbiter.decide(
+            ArbiterInput(
+                sectors=safe_sectors,
+                lidar_fresh=True,
+                nav_suggestion=suggestion,
+                signal=SignalState(),
+                qr_recent=False,
+                now=time.monotonic(),
+            )
+        )
+        assert hold.state == "EMERGENCY_STOP"
+    cleared = hysteresis_arbiter.decide(
+        ArbiterInput(
+            sectors=safe_sectors,
+            lidar_fresh=True,
+            nav_suggestion=suggestion,
+            signal=SignalState(),
+            qr_recent=False,
+            now=time.monotonic(),
+        )
+    )
+    assert cleared.state != "EMERGENCY_STOP"
+
     with tempfile.TemporaryDirectory() as tmp:
         logger = QRLogger(Path(tmp) / "qr_log.jsonl", confirm_count=2)
         assert logger.observe("checkpoint-1") is None
         event = logger.observe("checkpoint-1", robot_state="QR_SCAN")
         assert event is not None and event.logged
+
+    profiles_dir = Path(__file__).resolve().parent / "configs"
+    wall_profile = load_profile_parameters(profiles_dir / "wall_follow_safe.yaml")
+    ftg_profile = load_profile_parameters(profiles_dir / "follow_gap_safe.yaml")
+    assert wall_profile["profile_name"] == "wall_follow_safe"
+    assert wall_profile["nav_module"] == "wall_follow"
+    assert ftg_profile["profile_name"] == "follow_gap_safe"
+    assert ftg_profile["nav_module"] == "follow_gap"
 
     payload_path = Path(tempfile.gettempdir()) / "reactive_nav_signal_test.json"
     payload_path.write_text(

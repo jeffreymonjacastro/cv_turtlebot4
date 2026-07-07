@@ -5,6 +5,7 @@
 #  - Carga un YOLO detect custom y dibuja bounding boxes en vivo
 #  - Escribe output/signals/latest_signal.json para win/yolo/enviador.py
 # ============================================================
+import argparse
 import base64
 import json
 import os
@@ -62,6 +63,7 @@ _model = None
 _last_signal_write_time = 0.0
 _last_signal_signature = None
 _last_write_warning_time = 0.0
+_view_only = False
 
 
 def should_print_scan():
@@ -278,7 +280,10 @@ def draw_detection(img, detection):
 
 
 def draw_status(img):
-    if _stable_direction == "none":
+    if _view_only:
+        text = "Vista en vivo oficial | YOLO desactivado (--view-only)"
+        color = (255, 255, 255)
+    elif _stable_direction == "none":
         text = "Estado: buscando senal | comando esperado: adelante"
         color = (255, 255, 255)
     else:
@@ -417,6 +422,10 @@ def handle_scan(parts):
 def process_signal_from_image(img, sec, nsec):
     global _signal_frame_counter
 
+    if _view_only:
+        draw_status(img)
+        return
+
     _signal_frame_counter += 1
     source_frame_time = f"{sec}.{nsec:09d}"
     if _signal_frame_counter % SIGNAL_CHECK_EVERY_N_FRAMES != 0:
@@ -454,26 +463,56 @@ def handle_img(parts):
         print(f"[IMG] Error: {e}")
 
 
-def main():
-    global _model
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("robot_ip", nargs="?", default=ROBOT_IP, help="IP del TurtleBot")
+    parser.add_argument(
+        "--view-only",
+        action="store_true",
+        help="Solo muestra la camara en vivo. No ejecuta YOLO ni escribe latest_signal.json.",
+    )
+    return parser.parse_args()
 
-    _model = load_signal_model()
-    write_latest_signal("none", 0.0, None)
+
+def print_banner(robot_ip):
+    mode = "VIEW ONLY" if _view_only else "LIVE VIEW + YOLO"
+    print("=" * 72)
+    print("[CAMERA] Ventana oficial de vista en vivo del TurtleBot para el operador")
+    print(f"[CAMERA] Modo: {mode}")
+    print(f"[CAMERA] Robot: {robot_ip}:{ROBOT_PORT}")
+    print(f"[CAMERA] Estado compartido: {LATEST_SIGNAL_PATH}")
+    print("=" * 72)
+
+
+def main():
+    global _model, _view_only
+
+    args = parse_args()
+    _view_only = args.view_only
+    robot_ip = args.robot_ip
+
+    if _view_only:
+        _model = None
+    else:
+        _model = load_signal_model()
+        write_latest_signal("none", 0.0, None)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    robot_ip = sys.argv[1] if len(sys.argv) > 1 else ROBOT_IP
     robot_addr = (robot_ip, ROBOT_PORT)
 
+    print_banner(robot_ip)
     do_handshake(sock, robot_addr)
 
-    print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
-    print(f"[MAIN] Estado compartido: {LATEST_SIGNAL_PATH}")
-    print(
-        "[MAIN] Para accionar: "
-        f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
-        f"centro_x={ACTION_CENTER_X_MIN:.2f}-{ACTION_CENTER_X_MAX:.2f}, "
-        f"estable {STABLE_SIGNAL_FRAMES} frames."
-    )
+    if _view_only:
+        print("[MAIN] Recibiendo frames. YOLO desactivado por --view-only. Ctrl+C para salir.")
+    else:
+        print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
+        print(
+            "[MAIN] Para accionar: "
+            f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
+            f"centro_x={ACTION_CENTER_X_MIN:.2f}-{ACTION_CENTER_X_MAX:.2f}, "
+            f"estable {STABLE_SIGNAL_FRAMES} frames."
+        )
     try:
         while True:
             data, _addr = sock.recvfrom(65535)
@@ -494,7 +533,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[MAIN] Cerrando...")
     finally:
-        write_latest_signal("none", 0.0, None)
+        if not _view_only:
+            write_latest_signal("none", 0.0, None)
         sock.close()
         cv2.destroyAllWindows()
 
