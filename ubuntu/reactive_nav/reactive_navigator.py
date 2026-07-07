@@ -143,6 +143,17 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("side_avoid_distance", 0.34)
             self.declare_parameter("front_corner_avoid_distance", 0.62)
             self.declare_parameter("avoidance_gain", 0.65)
+            self.declare_parameter("gap_bubble_radius_m", 0.30)
+            self.declare_parameter("gap_min_width_deg", 18.0)
+            self.declare_parameter("gap_search_min_deg", -120.0)
+            self.declare_parameter("gap_search_max_deg", 120.0)
+            self.declare_parameter("gap_heading_scale_deg", 75.0)
+            self.declare_parameter("gap_distance_score_cap_m", 3.0)
+            self.declare_parameter("gap_forward_cone_deg", 18.0)
+            self.declare_parameter("robot_width_m", 0.36)
+            self.declare_parameter("gap_side_margin_m", 0.08)
+            self.declare_parameter("focm_alpha", 40.0)
+            self.declare_parameter("focm_goal_heading_deg", 0.0)
 
             self.declare_parameter("front_stop_distance", 0.32)
             self.declare_parameter("side_stop_distance", 0.14)
@@ -168,7 +179,7 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("qr_confirm_count", 2)
 
             self.declare_parameter("telemetry_enabled", True)
-            self.declare_parameter("telemetry_port", 6000)
+            self.declare_parameter("telemetry_port", 6612)
             self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
             self.declare_parameter("pairing_code", "ROBOT_A_2")
             self.declare_parameter("diagnostic_period_s", 0.5)
@@ -234,6 +245,17 @@ def run_ros_node(args=None) -> None:
                 "side_avoid_distance": self._param_float("side_avoid_distance"),
                 "front_corner_avoid_distance": self._param_float("front_corner_avoid_distance"),
                 "avoidance_gain": self._param_float("avoidance_gain"),
+                "gap_bubble_radius_m": self._param_float("gap_bubble_radius_m"),
+                "gap_min_width_deg": self._param_float("gap_min_width_deg"),
+                "gap_search_min_deg": self._param_float("gap_search_min_deg"),
+                "gap_search_max_deg": self._param_float("gap_search_max_deg"),
+                "gap_heading_scale_deg": self._param_float("gap_heading_scale_deg"),
+                "gap_distance_score_cap_m": self._param_float("gap_distance_score_cap_m"),
+                "gap_forward_cone_deg": self._param_float("gap_forward_cone_deg"),
+                "robot_width_m": self._param_float("robot_width_m"),
+                "gap_side_margin_m": self._param_float("gap_side_margin_m"),
+                "focm_alpha": self._param_float("focm_alpha"),
+                "focm_goal_heading_deg": self._param_float("focm_goal_heading_deg"),
             }
             self.nav_module = create_navigation_module(self._param_str("nav_module"), **nav_kwargs)
 
@@ -902,6 +924,22 @@ def run_self_test() -> None:
     nav = create_navigation_module("wall_follow")
     suggestion = nav.compute(NavigationObservation(sectors, time.monotonic(), 0.1))
     assert suggestion.mode in ("RECOVERY", "CORRIDOR_FOLLOW", "LEFT_WALL_FOLLOW", "RIGHT_WALL_FOLLOW")
+
+    for module_name in ("follow_gap", "largest_gap", "focm"):
+        gap_nav = create_navigation_module(
+            module_name,
+            base_speed=0.05,
+            narrow_speed=0.03,
+            max_yaw=0.65,
+            recovery_clearance=0.42,
+            gap_bubble_radius_m=0.25,
+            robot_width_m=0.36,
+            gap_side_margin_m=0.08,
+        )
+        gap_suggestion = gap_nav.compute(NavigationObservation(sectors, time.monotonic(), 0.1))
+        assert gap_suggestion.mode in ("FOLLOW_GAP", "FOCM", "RECOVERY")
+        assert abs(gap_suggestion.command.angular_z) <= 0.65
+        assert "gap_width" in gap_suggestion.debug or gap_suggestion.reason.endswith("OPEN_SIDE")
 
     class FakeSectors:
         valid_count = 100

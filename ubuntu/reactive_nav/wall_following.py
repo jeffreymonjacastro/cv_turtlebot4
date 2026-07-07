@@ -59,6 +59,7 @@ class WallFollowNavigation:
         side_avoid_distance: float = 0.34,
         front_corner_avoid_distance: float = 0.62,
         avoidance_gain: float = 0.65,
+        **_unused,
     ):
         self.base_speed = base_speed
         self.narrow_speed = narrow_speed
@@ -213,4 +214,18 @@ def create_navigation_module(name: str, **kwargs) -> NavigationModule:
     normalized = (name or "wall_follow").strip().lower()
     if normalized in ("wall_follow", "wall_following", "corridor"):
         return WallFollowNavigation(**kwargs)
+    if normalized in ("follow_gap", "follow_the_gap", "ftg", "largest_gap"):
+        try:
+            from .gap_navigation import FollowGapNavigation
+        except ImportError:  # pragma: no cover - direct script fallback
+            from gap_navigation import FollowGapNavigation
+
+        return FollowGapNavigation(**kwargs)
+    if normalized in ("focm", "follow_obstacle_circle", "obstacle_circle"):
+        try:
+            from .gap_navigation import FocmNavigation
+        except ImportError:  # pragma: no cover - direct script fallback
+            from gap_navigation import FocmNavigation
+
+        return FocmNavigation(**kwargs)
     raise ValueError(f"Unknown navigation module: {name}")

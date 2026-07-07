@@ -22,18 +22,34 @@ python3 -m pip install -r requirements.txt
 Run the diagnostics receiver:
 
 ```bash
-export ROBOT_PORT=6001
+export ROBOT_PORT=6612
 python3 win/lidar/recibidor.py <robot_ip>
 ```
 
 Run the YOLO detector/receiver:
 
 ```bash
-python3 win/yolo/recibidor.py
+export ROBOT_PORT=6610
+python3 win/yolo/recibidor.py <robot_ip>
 ```
 
 This script opens an OpenCV display window, so run it from the Mac desktop
 session, not from an SSH session into the TurtleBot.
+
+Equivalent environment-variable form:
+
+```bash
+export ROBOT_IP=<robot_ip>
+export ROBOT_PORT=6610
+python3 win/yolo/recibidor.py
+```
+
+Run the QR telemetry receiver, if you are using the separate QR sender:
+
+```bash
+export ROBOT_PORT=6611
+python3 win/detect_qr/recibidor.py <robot_ip>
+```
 
 Do not run this with the new navigator:
 
@@ -62,7 +78,7 @@ QR logging setup, and command decisions without moving the robot.
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
@@ -76,7 +92,7 @@ Only when the robot is in open space and ready for movement, run:
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=false \
   -p enable_motion:=true \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \

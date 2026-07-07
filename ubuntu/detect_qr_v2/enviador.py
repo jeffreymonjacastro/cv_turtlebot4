@@ -17,7 +17,7 @@ class UdpTelemetryNode(Node):
         super().__init__("udp_telemetry_v2")
 
         # ========= Parametros =========
-        self.declare_parameter("port", 6000)
+        self.declare_parameter("port", int(os.environ.get("QR_TELEMETRY_PORT", "6611")))
         self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
         self.declare_parameter("pairing_code", "ROBOT_A_2")  # debe coincidir con la PC
         self.declare_parameter("scan_topic", "/scan")

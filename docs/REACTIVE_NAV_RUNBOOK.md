@@ -31,7 +31,7 @@ Runtime flow:
 ```text
 /scan
   -> lidar_sectors.py
-  -> selected navigation module from wall_following.py
+  -> selected navigation module from wall_following.py / gap_navigation.py
   -> behavior_arbiter.py safety checks
   -> /cmd_vel TwistStamped
   -> create3_repub
@@ -52,10 +52,30 @@ The navigation algorithm is replaceable through a factory:
 
 ```bash
 -p nav_module:=wall_follow
+-p nav_module:=follow_gap
+-p nav_module:=focm
 ```
 
 Safety, QR, YOLO reading, diagnostics, and command publishing stay outside the
 navigation module.
+
+Available modules:
+
+- `wall_follow`: corridor/wall following with free-gap recovery.
+- `follow_gap`: F1TENTH-style Follow-the-Gap using nearest-obstacle bubble removal and largest safe angular gap selection.
+- `focm`: Follow the Obstacle Circle Method using physical gap width selection and obstacle-circle tangent heading.
+
+Shared gap/FOCM tuning parameters:
+
+```bash
+-p gap_bubble_radius_m:=0.30
+-p gap_min_width_deg:=18.0
+-p gap_search_min_deg:=-120.0
+-p gap_search_max_deg:=120.0
+-p robot_width_m:=0.36
+-p gap_side_margin_m:=0.08
+-p focm_alpha:=40.0
+```
 
 ## Do not run these together
 
@@ -182,7 +202,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
   -p collision_log_path:=/home/ubuntu/output/collision_events.jsonl \
   -p collision_image_dir:=/home/ubuntu/output/collision_frames \
@@ -280,13 +300,13 @@ state=SENSOR_CHECK reason=NO_LIDAR_SECTOR_MAP cmd=(0.000,0.000)
 
 ## UDP diagnostics
 
-Use port `6001` for the new navigator so it does not collide with the existing
-image telemetry sender on port `6000`.
+Use port `6612` for the new navigator diagnostics so it does not collide with
+teammates using the legacy image telemetry sender on port `6000`.
 
 Laptop receiver:
 
 ```powershell
-$env:ROBOT_PORT=6001
+$env:ROBOT_PORT=6612
 python win/lidar/recibidor.py <robot_ip>
 ```
 
@@ -348,7 +368,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p sign_confirm_window:=1 \
   -p sign_confirm_count:=1 \
   -p max_signal_age_s:=30.0 \
@@ -400,7 +420,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=false \
   -p enable_motion:=true \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \

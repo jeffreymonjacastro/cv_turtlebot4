@@ -71,7 +71,10 @@ Common identity and pairing values used across scripts:
 
 Ports:
 
-- UDP `6000`: robot-to-laptop telemetry and handshake.
+- UDP `6000`: legacy robot-to-laptop telemetry and handshake.
+- UDP `6610`: current YOLO image/scan telemetry for this working setup.
+- UDP `6611`: current QR telemetry for this working setup.
+- UDP `6612`: current reactive navigation diagnostics for this working setup.
 - UDP `5007`: laptop-to-robot movement commands.
 
 Telemetry handshake:
@@ -255,7 +258,9 @@ Main outcomes:
 
 Useful memory:
 
-- The receiver side expects `ACK 2 turtlebot4_rensso_mora` style traffic over UDP `6000`.
+- The receiver side expects `ACK 2 turtlebot4_rensso_mora` style traffic over
+  the selected telemetry UDP port. Current working defaults use `6610`,
+  `6611`, and `6612`; legacy scripts may still use `6000`.
 - A GUI/display error on the TurtleBot is a deployment-side mistake for laptop receiver scripts.
 
 ### 2026-06-02 - uv setup, tutorial, WSL2 mirrored networking

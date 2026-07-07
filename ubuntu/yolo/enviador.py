@@ -15,7 +15,7 @@ class UdpSignalsTelemetryNode(Node):
     def __init__(self):
         super().__init__("udp_signals_telemetry")
 
-        self.declare_parameter("port", 6000)
+        self.declare_parameter("port", int(os.environ.get("YOLO_TELEMETRY_PORT", "6610")))
         self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
         self.declare_parameter("pairing_code", "ROBOT_A_2")
         self.declare_parameter("scan_topic", "/scan")

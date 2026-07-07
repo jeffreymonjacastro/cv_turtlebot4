@@ -36,7 +36,7 @@ class UdpDiagnostics:
         logger,
         *,
         enabled: bool = True,
-        port: int = 6000,
+        port: int = 6612,
         robot_name: str = "turtlebot4_rensso_mora",
         pairing_code: str = "ROBOT_A_2",
     ):
@@ -171,4 +171,3 @@ class PersistentJsonlLogger:
                 handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
         except OSError:
             self._warned = True
-

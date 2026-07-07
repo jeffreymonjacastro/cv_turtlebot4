@@ -1,5 +1,10 @@
 .venv/
 output/
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyc.*
+
 #labels-gt/
 #kaggle/**/outputs/
 
