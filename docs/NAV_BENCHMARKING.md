@@ -303,12 +303,29 @@ When robot/debug logs exist, analyze and optionally replay them offline:
 ```bash
 python3 scripts/analyze_robot_failure_log.py output/reactive_nav_debug*.jsonl
 
-python3 scripts/replay_nav_from_log.py output/reactive_nav_debug*.jsonl \
-  --nav-modules wall_follow follow_gap focm \
-  --out-dir output/log_replay_runs
+python3 scripts/extract_real_log_regressions.py output/reactive_nav_debug*.jsonl \
+  --intervals output/real_log_analysis/failure_intervals.jsonl \
+  --out-dir output/real_log_regressions
+
+python3 scripts/replay_real_log_nav.py output/reactive_nav_debug*.jsonl \
+  --profiles wall_follow_safe wall_follow_tuned follow_gap_safe \
+  --out-dir output/real_log_replay
+
+python3 scripts/run_nav_ablation.py --out-dir output/ablation_runs/real_log_iter
 ```
 
-Sector-level log replay is still offline validation only.
+The repeatable loop is:
+
+```text
+real logs
+-> failure_intervals.jsonl
+-> representative regression snippets
+-> sector-level replay
+-> ablation report
+-> tuned config decision
+```
+
+Sector-level log replay and ablation are still offline validation only.
 
 ---
 

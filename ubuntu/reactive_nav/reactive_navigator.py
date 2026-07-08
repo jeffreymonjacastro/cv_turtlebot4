@@ -181,6 +181,15 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("side_avoid_distance", 0.34)
             self.declare_parameter("front_corner_avoid_distance", 0.62)
             self.declare_parameter("avoidance_gain", 0.65)
+            self.declare_parameter("enable_corner_yaw_veto", True)
+            self.declare_parameter("enable_corner_slowdown", True)
+            self.declare_parameter("enable_side_yaw_veto", True)
+            self.declare_parameter("enable_anti_spin", False)
+            self.declare_parameter("anti_spin_yaw_threshold", 0.42)
+            self.declare_parameter("anti_spin_linear_threshold", 0.025)
+            self.declare_parameter("anti_spin_trigger_cycles", 8)
+            self.declare_parameter("anti_spin_recovery_speed", 0.035)
+            self.declare_parameter("angular_smoothing_alpha", 1.0)
             self.declare_parameter("gap_bubble_radius_m", 0.30)
             self.declare_parameter("gap_min_width_deg", 18.0)
             self.declare_parameter("gap_search_min_deg", -120.0)
@@ -341,6 +350,15 @@ def run_ros_node(args=None) -> None:
                 slow_distance=self._param_float("slow_distance"),
                 front_corner_avoid_distance=self._param_float("front_corner_avoid_distance"),
                 corner_slow_speed=self._param_float("corner_slow_speed"),
+                enable_corner_yaw_veto=self._param_bool("enable_corner_yaw_veto"),
+                enable_corner_slowdown=self._param_bool("enable_corner_slowdown"),
+                enable_side_yaw_veto=self._param_bool("enable_side_yaw_veto"),
+                enable_anti_spin=self._param_bool("enable_anti_spin"),
+                anti_spin_yaw_threshold=self._param_float("anti_spin_yaw_threshold"),
+                anti_spin_linear_threshold=self._param_float("anti_spin_linear_threshold"),
+                anti_spin_trigger_cycles=self._param_int("anti_spin_trigger_cycles"),
+                anti_spin_recovery_speed=self._param_float("anti_spin_recovery_speed"),
+                angular_smoothing_alpha=self._param_float("angular_smoothing_alpha"),
                 turn_clearance=self._param_float("turn_clearance"),
                 sign_debouncer=signs,
                 turn_controller=turns,

@@ -691,3 +691,80 @@ physical movement validation
 ```
 
 Only physical robot tests can establish actual movement readiness.
+
+---
+
+## Offline iteration from real robot failures
+
+When physical robot runs underperform, do not jump straight to more physical testing. First convert the failure evidence into offline regression tests.
+
+Preferred loop:
+
+```text
+real robot debug log
+  -> analyze failure intervals
+  -> replay or reconstruct those intervals offline
+  -> run current controller on them
+  -> compare old vs new response
+  -> add regression scenarios
+  -> tune / ablate changes
+  -> only then dry-run on robot
+```
+
+The goal is not to perfectly simulate physics. The goal is to expose whether the current controller would still choose unsafe or unstable commands when given the same LiDAR/sector/sign/QR context that appeared during real failures.
+
+### Priority evidence sources
+
+Use these first when available:
+
+```text
+output/reactive_nav_debug*.jsonl
+output/collision_events*.jsonl
+output/collision_frames/
+output/sim_runs*/
+output/tuning_runs*/
+```
+
+The debug JSONL log is the most important artifact. It should be treated as a regression dataset.
+
+### Required analysis targets
+
+For each real/debug log, identify intervals of:
+
+```text
+corner risk
+side scrape risk
+spin / high-yaw low-progress
+oscillation / frequent angular sign changes
+yaw saturation
+recovery loops
+emergency-stop bursts
+turn timeout / alignment timeout
+state flapping
+```
+
+Convert representative intervals into replay cases or synthetic regression scenarios.
+
+### Implementation rules
+
+- Do not require Gazebo or TurtleBot hardware for this loop.
+- Do not publish `/cmd_vel`.
+- Do not claim physical readiness from offline replay.
+- Keep `wall_follow` as the primary candidate unless evidence says otherwise.
+- Keep `follow_gap` as the preferred recovery candidate.
+- Keep `focm` experimental until it beats the alternatives on harsh scenarios without safety regressions.
+- Any promoted config must improve real-log-derived metrics and keep safety scenarios passing.
+
+### Promotion rule
+
+A tuned profile may be promoted only if:
+
+```text
+all critical safety scenarios pass
+corner/side risk does not regress
+spin and oscillation metrics improve or remain acceptable
+real-log replay improves relative to baseline
+ablation shows which change caused the improvement
+```
+
+If a change improves average score but worsens safety, corner risk, or spin behavior, reject it.

@@ -147,10 +147,22 @@ If the debug log includes enough sector distances, the project can replay from s
 Useful script:
 
 ```bash
-python3 scripts/replay_nav_from_log.py \
+python3 scripts/analyze_robot_failure_log.py \
   output/robot_runs/reactive_nav_debug.jsonl \
-  --nav-modules wall_follow follow_gap focm \
-  --out-dir output/log_replay_runs
+  --out-dir output/real_log_analysis
+
+python3 scripts/extract_real_log_regressions.py \
+  output/robot_runs/reactive_nav_debug.jsonl \
+  --intervals output/real_log_analysis/failure_intervals.jsonl \
+  --out-dir output/real_log_regressions
+
+python3 scripts/replay_real_log_nav.py \
+  output/robot_runs/reactive_nav_debug.jsonl \
+  --profiles wall_follow_safe wall_follow_tuned follow_gap_safe \
+  --out-dir output/real_log_replay
+
+python3 scripts/run_nav_ablation.py \
+  --out-dir output/ablation_runs/real_log_iter
 ```
 
 This should:
@@ -160,6 +172,8 @@ This should:
 - run selected modules on the same observations
 - compare suggested/final commands with the original run
 - produce JSONL and summary metrics
+- extract a small representative set of named regression snippets
+- identify which ablation variants helped or hurt
 
 If full LaserScan is unavailable, label it clearly as sector-level replay.
 

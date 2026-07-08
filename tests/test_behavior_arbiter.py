@@ -106,6 +106,55 @@ def test_front_corner_safety_veto_prevents_yaw_into_corner():
     assert output.debug["corner_yaw_veto"] == "front_left"
 
 
+def test_front_corner_veto_can_be_disabled_for_ablation():
+    sectors = extract_sectors(corridor_scan(front=1.4, front_left=0.40, front_right=1.2, left=1.0, right=0.35))
+    arbiter = BehaviorArbiter(
+        front_corner_avoid_distance=0.62,
+        corner_slow_speed=0.03,
+        enable_corner_yaw_veto=False,
+        enable_corner_slowdown=False,
+    )
+
+    output = arbiter.decide(
+        ArbiterInput(
+            sectors=sectors,
+            lidar_fresh=True,
+            nav_suggestion=_suggest(linear=0.09, yaw=0.45),
+            signal=SignalState(),
+            qr_recent=False,
+            now=10.0,
+        )
+    )
+
+    assert output.command.angular_z == 0.45
+    assert output.command.linear_x == 0.09
+    assert output.debug["corner_yaw_veto"] == "none"
+    assert output.debug["corner_slowdown"] is False
+
+
+def test_anti_spin_limiter_requires_repeated_spin_candidate_cycles():
+    sectors = extract_sectors(corridor_scan(front=2.0, left=1.0, right=1.0))
+    arbiter = BehaviorArbiter(
+        enable_anti_spin=True,
+        anti_spin_yaw_threshold=0.4,
+        anti_spin_linear_threshold=0.03,
+        anti_spin_trigger_cycles=2,
+        anti_spin_recovery_speed=0.04,
+    )
+
+    first = arbiter.decide(
+        ArbiterInput(sectors, True, _suggest(linear=0.0, yaw=0.5), SignalState(), False, 10.0)
+    )
+    second = arbiter.decide(
+        ArbiterInput(sectors, True, _suggest(linear=0.0, yaw=0.5), SignalState(), False, 10.1)
+    )
+
+    assert first.debug["anti_spin_limited"] is False
+    assert second.debug["anti_spin_limited"] is True
+    assert second.command.linear_x >= 0.04
+    assert abs(second.command.angular_z) < 0.5
+
+
 def test_sign_debouncer_confirms_once_and_suppresses_cooldown():
     debouncer = SignDebouncer(confirm_window=3, confirm_count=2, cooldown_s=5.0)
     signal = _signal("left", "same-left")

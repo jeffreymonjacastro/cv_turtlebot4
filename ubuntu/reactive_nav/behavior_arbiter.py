@@ -122,6 +122,15 @@ class BehaviorArbiter:
         turn_clearance: float = 0.42,
         front_corner_avoid_distance: float = 0.62,
         corner_slow_speed: float = 0.035,
+        enable_corner_yaw_veto: bool = True,
+        enable_corner_slowdown: bool = True,
+        enable_side_yaw_veto: bool = True,
+        enable_anti_spin: bool = False,
+        anti_spin_yaw_threshold: float = 0.42,
+        anti_spin_linear_threshold: float = 0.025,
+        anti_spin_trigger_cycles: int = 8,
+        anti_spin_recovery_speed: float = 0.035,
+        angular_smoothing_alpha: float = 1.0,
         sign_debouncer: Optional[SignDebouncer] = None,
         turn_controller: Optional[TurnController] = None,
     ):
@@ -135,6 +144,15 @@ class BehaviorArbiter:
         self.turn_clearance = turn_clearance
         self.front_corner_avoid_distance = front_corner_avoid_distance
         self.corner_slow_speed = max(0.0, corner_slow_speed)
+        self.enable_corner_yaw_veto = enable_corner_yaw_veto
+        self.enable_corner_slowdown = enable_corner_slowdown
+        self.enable_side_yaw_veto = enable_side_yaw_veto
+        self.enable_anti_spin = enable_anti_spin
+        self.anti_spin_yaw_threshold = max(0.0, anti_spin_yaw_threshold)
+        self.anti_spin_linear_threshold = max(0.0, anti_spin_linear_threshold)
+        self.anti_spin_trigger_cycles = max(1, anti_spin_trigger_cycles)
+        self.anti_spin_recovery_speed = max(0.0, anti_spin_recovery_speed)
+        self.angular_smoothing_alpha = max(0.0, min(1.0, angular_smoothing_alpha))
         self.signs = sign_debouncer or SignDebouncer()
         self.turns = turn_controller or TurnController()
         self._qr_hold_until = 0.0
@@ -142,6 +160,8 @@ class BehaviorArbiter:
         self._emergency_clear_counter = 0
         self._emergency_last_reason = "NONE"
         self._emergency_trigger_count = 0
+        self._spin_candidate_cycles = 0
+        self._previous_smoothed_yaw: Optional[float] = None
 
     def decide(self, inputs: ArbiterInput) -> ArbiterOutput:
         sectors = inputs.sectors
@@ -281,31 +301,64 @@ class BehaviorArbiter:
             "corner_yaw_veto": "none",
             "corner_slowdown": False,
             "side_yaw_veto": "none",
+            "anti_spin_limited": False,
+            "angular_smoothing_applied": False,
         }
 
         if front is not None and front < self.slow_distance:
             linear = min(linear, 0.04)
             debug["front_slowdown"] = True
         if front_left is not None and front_left < self.front_corner_avoid_distance:
-            linear = min(linear, self.corner_slow_speed)
-            debug["corner_slowdown"] = True
+            if self.enable_corner_slowdown:
+                linear = min(linear, self.corner_slow_speed)
+                debug["corner_slowdown"] = True
             debug["front_left_risk_m"] = front_left
-            if yaw > 0.0:
+            if self.enable_corner_yaw_veto and yaw > 0.0:
                 yaw = min(yaw, 0.0)
                 debug["corner_yaw_veto"] = "front_left"
         if front_right is not None and front_right < self.front_corner_avoid_distance:
-            linear = min(linear, self.corner_slow_speed)
-            debug["corner_slowdown"] = True
+            if self.enable_corner_slowdown:
+                linear = min(linear, self.corner_slow_speed)
+                debug["corner_slowdown"] = True
             debug["front_right_risk_m"] = front_right
-            if yaw < 0.0:
+            if self.enable_corner_yaw_veto and yaw < 0.0:
                 yaw = max(yaw, 0.0)
                 debug["corner_yaw_veto"] = "front_right"
-        if left is not None and left < self.side_stop_distance * 1.6 and yaw > 0.0:
+        if self.enable_side_yaw_veto and left is not None and left < self.side_stop_distance * 1.6 and yaw > 0.0:
             yaw = min(yaw, 0.0)
             debug["side_yaw_veto"] = "left"
-        if right is not None and right < self.side_stop_distance * 1.6 and yaw < 0.0:
+        if self.enable_side_yaw_veto and right is not None and right < self.side_stop_distance * 1.6 and yaw < 0.0:
             yaw = max(yaw, 0.0)
             debug["side_yaw_veto"] = "right"
+
+        front_clear = front is None or front >= self.slow_distance
+        if (
+            self.enable_anti_spin
+            and front_clear
+            and abs(yaw) >= self.anti_spin_yaw_threshold
+            and abs(linear) <= self.anti_spin_linear_threshold
+        ):
+            self._spin_candidate_cycles += 1
+        else:
+            self._spin_candidate_cycles = 0
+        debug["anti_spin_candidate_cycles"] = float(self._spin_candidate_cycles)
+        if self._spin_candidate_cycles >= self.anti_spin_trigger_cycles:
+            yaw *= 0.35
+            linear = max(linear, self.anti_spin_recovery_speed)
+            debug["anti_spin_limited"] = True
+
+        if self.angular_smoothing_alpha < 1.0:
+            previous_yaw = 0.0 if self._previous_smoothed_yaw is None else self._previous_smoothed_yaw
+            alpha = self.angular_smoothing_alpha
+            smoothed_yaw = alpha * yaw + (1.0 - alpha) * previous_yaw
+            if abs(smoothed_yaw - yaw) > 1e-6:
+                debug["angular_smoothing_applied"] = True
+                debug["angular_smoothing_input_yaw"] = yaw
+            yaw = smoothed_yaw
+            self._previous_smoothed_yaw = yaw
+        else:
+            self._previous_smoothed_yaw = yaw
+
         debug["safety_output_linear_x"] = linear
         debug["safety_output_angular_z"] = yaw
         return TwistCommand(linear, yaw), debug
