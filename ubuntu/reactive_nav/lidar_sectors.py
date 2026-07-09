@@ -171,6 +171,17 @@ class FreeGap:
     min_distance_m: float
 
 
+@dataclass(frozen=True)
+class TraversableGap:
+    start_deg: float
+    end_deg: float
+    center_deg: float
+    width_deg: float
+    physical_width_m: float
+    min_distance_m: float
+    score: float
+
+
 def largest_free_gap(
     points: Sequence[ScanPoint],
     min_clearance_m: float,
@@ -220,3 +231,66 @@ def largest_free_gap(
             best = candidate
     return best
 
+
+def traversable_gaps(
+    points: Sequence[ScanPoint],
+    *,
+    robot_width_m: float,
+    margin_m: float,
+    min_clearance_m: float,
+    search_min_deg: float = -120.0,
+    search_max_deg: float = 120.0,
+) -> Tuple[TraversableGap, ...]:
+    """Segment the scan into physically wide enough gaps for the robot."""
+    required_width = max(0.10, robot_width_m + 2.0 * max(0.0, margin_m))
+    candidates = sorted(
+        (
+            point
+            for point in points
+            if search_min_deg <= point.angle_deg <= search_max_deg
+            and point.distance_m >= min_clearance_m
+        ),
+        key=lambda point: point.angle_deg,
+    )
+    if not candidates:
+        return tuple()
+
+    segments: List[List[ScanPoint]] = []
+    current: List[ScanPoint] = []
+    previous_angle: Optional[float] = None
+    for point in candidates:
+        contiguous = previous_angle is None or abs(point.angle_deg - previous_angle) <= 6.0
+        if contiguous:
+            current.append(point)
+        else:
+            if current:
+                segments.append(current)
+            current = [point]
+        previous_angle = point.angle_deg
+    if current:
+        segments.append(current)
+
+    gaps: List[TraversableGap] = []
+    for segment in segments:
+        start = segment[0].angle_deg
+        end = segment[-1].angle_deg
+        width_deg = abs(end - start)
+        min_distance = min(point.distance_m for point in segment)
+        physical_width = 2.0 * min_distance * math.sin(math.radians(width_deg) * 0.5)
+        if physical_width < required_width:
+            continue
+        center = (start + end) * 0.5
+        forward_bias = max(0.0, 1.0 - abs(center) / max(abs(search_min_deg), abs(search_max_deg), 1.0))
+        score = physical_width * 10.0 + min_distance * 4.0 + forward_bias * 6.0 - abs(center) * 0.02
+        gaps.append(
+            TraversableGap(
+                start_deg=start,
+                end_deg=end,
+                center_deg=center,
+                width_deg=width_deg,
+                physical_width_m=physical_width,
+                min_distance_m=min_distance,
+                score=score,
+            )
+        )
+    return tuple(sorted(gaps, key=lambda gap: gap.score, reverse=True))

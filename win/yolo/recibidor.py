@@ -300,7 +300,7 @@ def draw_status(img):
         text = f"Estado estable: {_stable_direction}"
         color = detection_color(_stable_direction)
     cv2.putText(
-        img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
+        img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA
     )
 
 

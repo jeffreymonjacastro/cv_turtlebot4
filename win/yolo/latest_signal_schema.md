@@ -28,6 +28,7 @@ Accepted `direction` values:
 left
 right
 stop
+meta
 none
 ```
 

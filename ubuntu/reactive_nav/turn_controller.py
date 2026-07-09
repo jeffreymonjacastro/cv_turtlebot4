@@ -92,7 +92,7 @@ class TurnController:
             front = sectors.distance("front")
             if left is not None and right is not None:
                 error = left - right
-                yaw = max(-self.align_yaw_limit, min(self.align_yaw_limit, -self.align_gain * error))
+                yaw = max(-self.align_yaw_limit, min(self.align_yaw_limit, self.align_gain * error))
                 if abs(error) < 0.08 and (front is None or front > 0.45):
                     self._finish(now)
                     return TurnStep(TwistCommand(), False, "NAVIGATE", "ALIGNMENT_ERROR_SMALL")
@@ -113,4 +113,3 @@ class TurnController:
         self.phase = "IDLE"
         self.phase_started = now
         self.completed_at = now
-
