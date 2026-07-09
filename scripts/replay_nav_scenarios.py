@@ -385,6 +385,81 @@ def _oscillatory_corridor_scan(t: float, _rng: random.Random) -> FakeLaserScan:
     )
 
 
+def _u_curve_corridor_scan(t: float, _rng: random.Random) -> FakeLaserScan:
+    """Multi-phase U-shaped corridor.
+
+    Phases (total ~20 s at base_speed ~0.09 m/s):
+      0–4 s   straight corridor heading "forward"
+      4–7 s   approach U-bend end wall; left opens
+      7–13 s  inside the U-bend turning left ~180°
+      13–16 s exit the bend; front clears on the return leg
+      16–20 s straight corridor heading "back"
+
+    Sector evolution is smooth so the dead-reckoned trajectory looks
+    like a recognisable U when projected by the visualiser.
+    """
+    cw = 0.55          # corridor half-width (wall distance on each side)
+    fw_far = 2.2       # front distance when corridor is clear ahead
+    fw_close = 0.32    # front distance when facing end wall
+
+    # ── Phase 1: straight corridor ──────────────────────────────────────
+    if t < 4.0:
+        front_dist = max(fw_far - 0.25 * t, 0.90)   # closing slowly
+        return corridor_scan(
+            front=front_dist, front_left=front_dist * 0.65,
+            front_right=front_dist * 0.65,
+            left=cw, right=cw, rear=1.0, stamp=t,
+        )
+
+    # ── Phase 2: approaching U-bend end wall, left opens ────────────────
+    if t < 7.0:
+        p = (t - 4.0) / 3.0                          # 0→1 through phase
+        front_dist = max(0.90 - 0.58 * p, fw_close)
+        left_open = cw + 1.2 * p                     # left side opens
+        fl_open = 0.60 + 0.9 * p                     # front-left opens
+        return corridor_scan(
+            front=front_dist, front_left=fl_open,
+            front_right=max(0.45, 0.60 - 0.15 * p),
+            left=left_open, right=cw, rear=1.0, stamp=t,
+        )
+
+    # ── Phase 3: inside the U-bend (turning left) ──────────────────────
+    if t < 13.0:
+        p = (t - 7.0) / 6.0                          # 0→1 through bend
+        # front sweeps from blocked → open → blocked → open as heading
+        # rotates ~180° through the bend
+        front_dist = 0.35 + 1.4 * abs(math.sin(math.pi * p))
+        # left = outer wall of the bend, gets farther at mid-turn
+        left_dist = 0.9 + 0.7 * math.sin(math.pi * p)
+        # right = inner wall of the bend, stays close
+        right_dist = 0.28 + 0.12 * math.sin(math.pi * p)
+        fl = 0.50 + 1.0 * max(0, math.sin(math.pi * (p - 0.1)))
+        fr = 0.30 + 0.4 * max(0, math.sin(math.pi * (p + 0.15)))
+        return corridor_scan(
+            front=front_dist, front_left=fl, front_right=fr,
+            left=left_dist, right=right_dist, rear=0.8, stamp=t,
+        )
+
+    # ── Phase 4: exiting bend, front clears ─────────────────────────────
+    if t < 16.0:
+        p = (t - 13.0) / 3.0
+        front_dist = 0.50 + 1.5 * p
+        right_open = cw + 1.0 * (1.0 - p)            # right was open, closing
+        return corridor_scan(
+            front=front_dist,
+            front_left=max(0.50, 0.80 - 0.30 * p),
+            front_right=0.55 + 0.60 * p,
+            left=cw, right=max(cw, right_open), rear=1.0, stamp=t,
+        )
+
+    # ── Phase 5: straight return corridor ───────────────────────────────
+    return corridor_scan(
+        front=fw_far, front_left=fw_far * 0.65,
+        front_right=fw_far * 0.65,
+        left=cw, right=cw, rear=1.0, stamp=t,
+    )
+
+
 def _dead_end_scan(t: float, _rng: random.Random) -> FakeLaserScan:
     open_left = min(1.55, 0.45 + 0.12 * t)
     return corridor_scan(
@@ -624,6 +699,12 @@ def build_scenarios(default_duration_s: float) -> Dict[str, Scenario]:
             duration_s=max(default_duration_s, 10.0),
             scan_fn=_oscillatory_corridor_scan,
             expected={"oscillation_score_max": 35.0, "angular_sign_changes_per_min_max": 45.0},
+        ),
+        "u_curve_corridor": Scenario(
+            name="u_curve_corridor",
+            duration_s=20.0,
+            scan_fn=_u_curve_corridor_scan,
+            expected={"positive_progress": True, "corner_risk_count": 0, "spin_ratio_max": 0.25},
         ),
     }
 
