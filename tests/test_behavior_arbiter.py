@@ -66,6 +66,48 @@ def test_front_blocked_emergency_dominates_navigation_suggestion():
     assert output.command.angular_z == 0.0
 
 
+def test_front_sector_outlier_does_not_stop_when_front_center_is_clear():
+    sectors = extract_sectors(corridor_scan(front=0.23, front_center=1.2, left=0.45, right=0.45))
+    arbiter = BehaviorArbiter(front_stop_distance=0.28)
+
+    output = arbiter.decide(
+        ArbiterInput(
+            sectors=sectors,
+            lidar_fresh=True,
+            nav_suggestion=_suggest(linear=0.07, yaw=0.0),
+            signal=SignalState(),
+            qr_recent=False,
+            now=10.0,
+        )
+    )
+
+    assert output.state == "CORRIDOR_FOLLOW"
+    assert output.command.linear_x > 0.0
+
+
+def test_recovery_zero_command_turns_toward_open_side_when_front_blocked():
+    sectors = extract_sectors(
+        corridor_scan(front=0.34, front_center=0.34, front_left=0.80, front_right=0.30, left=0.85, right=0.35)
+    )
+    arbiter = BehaviorArbiter(front_stop_distance=0.28, slow_distance=0.48, turn_clearance=0.40)
+
+    output = arbiter.decide(
+        ArbiterInput(
+            sectors=sectors,
+            lidar_fresh=True,
+            nav_suggestion=NavigationSuggestion(TwistCommand(0.0, 0.0), "RECOVERY", "TEST_RECOVERY_ZERO"),
+            signal=SignalState(),
+            qr_recent=False,
+            now=10.0,
+        )
+    )
+
+    assert output.state == "RECOVERY"
+    assert output.command.linear_x == 0.0
+    assert output.command.angular_z > 0.0
+    assert output.debug["recovery_unstick"] == "turn_toward_left" or output.debug["corner_opening_turn"] == "left"
+
+
 def test_side_safety_veto_prevents_yaw_into_close_wall():
     sectors = extract_sectors(corridor_scan(front=1.5, left=0.18, right=0.8))
     arbiter = BehaviorArbiter(side_stop_distance=0.12)
@@ -104,6 +146,32 @@ def test_front_corner_safety_veto_prevents_yaw_into_corner():
     assert output.command.angular_z <= 0.0
     assert output.command.linear_x <= 0.03
     assert output.debug["corner_yaw_veto"] == "front_left"
+
+
+def test_corner_opening_turn_forces_yaw_toward_open_side_on_sharp_curve():
+    sectors = extract_sectors(
+        corridor_scan(front=0.44, front_left=0.34, front_right=0.90, left=0.75, right=0.75)
+    )
+    arbiter = BehaviorArbiter(
+        slow_distance=0.48,
+        front_corner_avoid_distance=0.56,
+        corner_slow_speed=0.055,
+    )
+
+    output = arbiter.decide(
+        ArbiterInput(
+            sectors=sectors,
+            lidar_fresh=True,
+            nav_suggestion=_suggest(linear=0.08, yaw=0.0),
+            signal=SignalState(),
+            qr_recent=False,
+            now=10.0,
+        )
+    )
+
+    assert output.state == "CORRIDOR_FOLLOW"
+    assert output.command.angular_z < -0.20
+    assert output.debug["corner_opening_turn"] == "right"
 
 
 def test_front_corner_veto_can_be_disabled_for_ablation():
@@ -184,3 +252,21 @@ def test_blocked_sign_stays_in_candidate_without_turning():
     assert second.state == "SIGN_CANDIDATE"
     assert "TURN_LEFT_BLOCKED" in second.reason
     assert second.command == TwistCommand()
+
+
+def test_stop_sign_triggers_uturn_instead_of_manual_stop():
+    sectors = extract_sectors(corridor_scan(front=1.2, left=0.7, right=0.7))
+    arbiter = BehaviorArbiter(sign_debouncer=SignDebouncer(confirm_window=2, confirm_count=2))
+
+    first = arbiter.decide(
+        ArbiterInput(sectors, True, _suggest(), _signal("stop", "stop-1"), False, 1.0)
+    )
+    second = arbiter.decide(
+        ArbiterInput(sectors, True, _suggest(), _signal("stop", "stop-1"), False, 1.1)
+    )
+
+    assert first.state == "CORRIDOR_FOLLOW"
+    assert second.state == "TURNING_UTURN"
+    assert second.reason == "STOP_SIGN_CONFIRMED_UTURN"
+    assert second.command.linear_x == 0.0
+    assert second.command.angular_z > 0.0

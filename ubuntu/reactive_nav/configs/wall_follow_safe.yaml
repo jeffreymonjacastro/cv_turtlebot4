@@ -2,19 +2,20 @@
   ros__parameters:
     profile_name: wall_follow_safe
     nav_module: wall_follow
-    base_speed: 0.09
-    narrow_speed: 0.05
-    turn_slow_speed: 0.06
-    turn_slow_yaw_threshold: 0.22
-    max_yaw: 0.65
-    wall_kp: 0.45
+    base_speed: 0.26
+    narrow_speed: 0.14
+    turn_slow_speed: 0.16
+    turn_slow_yaw_threshold: 0.30
+    max_yaw: 0.75
+    wall_kp: 0.42
     wall_kd: 0.04
-    front_clear_distance: 0.58
-    slow_distance: 0.52
+    front_clear_distance: 0.50
+    slow_distance: 0.46
+    corner_slow_speed: 0.12
     recovery_clearance: 0.44
-    side_avoid_distance: 0.32
-    front_corner_avoid_distance: 0.64
-    avoidance_gain: 0.72
+    side_avoid_distance: 0.30
+    front_corner_avoid_distance: 0.58
+    avoidance_gain: 0.62
     gap_bubble_radius_m: 0.28
     gap_min_width_deg: 18.0
     gap_search_min_deg: -120.0
@@ -26,18 +27,26 @@
     gap_side_margin_m: 0.08
     focm_alpha: 40.0
     focm_goal_heading_deg: 0.0
-    front_stop_distance: 0.28
+    front_stop_distance: 0.30
     front_stop_clear_distance: 0.38
-    side_stop_distance: 0.12
-    side_stop_clear_distance: 0.19
-    emergency_clear_cycles: 3
-    turn_clearance: 0.40
-    turn_speed: 0.45
-    turn_degrees: 90.0
-    settle_seconds: 0.25
-    align_max_seconds: 1.4
-    align_yaw_limit: 0.24
-    align_gain: 0.42
-    align_error_threshold: 0.07
-    align_stable_cycles: 3
+    side_stop_distance: 0.16
+    side_stop_clear_distance: 0.22
+    emergency_clear_cycles: 2
+    turn_clearance: 0.44
+    turn_speed: 0.55
+    turn_degrees: 120.0
+    settle_seconds: 0.18
+    align_max_seconds: 1.2
+    align_yaw_limit: 0.30
+    align_gain: 0.48
+    align_error_threshold: 0.09
+    align_stable_cycles: 2
     align_same_direction_only: true
+    max_signal_age_s: 1.5
+    sign_confirm_window: 5
+    sign_confirm_count: 3
+    sign_min_confidence: 0.55
+    sign_min_area_ratio: 0.015
+    sign_center_x_min: 0.10
+    sign_center_x_max: 0.90
+    sign_cooldown_s: 6.0

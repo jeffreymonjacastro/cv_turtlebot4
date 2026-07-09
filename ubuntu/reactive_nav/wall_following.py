@@ -192,6 +192,17 @@ class WallFollowNavigation:
         if gap is not None:
             yaw = max(-self.max_yaw, min(self.max_yaw, gap.center_deg / 70.0))
             forward = self.narrow_speed if abs(gap.center_deg) < 18.0 and front and front > 0.42 else 0.0
+            turn_fallback = "none"
+            if forward == 0.0 and abs(yaw) < self.max_yaw * 0.35:
+                left_score = left if left is not None else 0.0
+                right_score = right if right is not None else 0.0
+                if abs(gap.center_deg) >= 1.0:
+                    turn_sign = 1.0 if gap.center_deg > 0.0 else -1.0
+                    turn_fallback = "gap_center_min_yaw"
+                else:
+                    turn_sign = 1.0 if left_score >= right_score else -1.0
+                    turn_fallback = "open_side_min_yaw"
+                yaw = turn_sign * self.max_yaw * 0.45
             return NavigationSuggestion(
                 TwistCommand(forward, yaw),
                 "RECOVERY",
@@ -202,6 +213,7 @@ class WallFollowNavigation:
                     "gap_center": gap.center_deg,
                     "gap_width": gap.width_deg,
                     "front": front if front is not None else -1.0,
+                    "recovery_turn_fallback": turn_fallback,
                 },
             )
 

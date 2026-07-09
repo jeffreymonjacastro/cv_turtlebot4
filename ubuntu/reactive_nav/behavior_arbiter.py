@@ -162,6 +162,8 @@ class BehaviorArbiter:
         self._emergency_trigger_count = 0
         self._spin_candidate_cycles = 0
         self._previous_smoothed_yaw: Optional[float] = None
+        self._recovery_turn_sign = 0.0
+        self._recovery_turn_until = 0.0
 
     def decide(self, inputs: ArbiterInput) -> ArbiterOutput:
         sectors = inputs.sectors
@@ -199,14 +201,18 @@ class BehaviorArbiter:
                 step = self.turns.step(sectors, now)
                 return self._output(step.command, step.state, f"SIGN_CONFIRMED_{confirmed}", True, step.debug)
         if confirmed == "STOP":
-            self.signs.consume(inputs.signal)
-            self.signs.start_cooldown(now)
-            return self._output(TwistCommand(), "MANUAL_STOP", "STOP_SIGN_CONFIRMED", True)
+            if self.turns.start("UTURN", now):
+                self.signs.consume(inputs.signal)
+                step = self.turns.step(sectors, now)
+                return self._output(step.command, step.state, "STOP_SIGN_CONFIRMED_UTURN", True, step.debug)
 
         if inputs.nav_suggestion is None:
             return self._output(TwistCommand(), "IDLE", "NO_NAVIGATION_SUGGESTION", True)
 
         command, safety_debug = self._apply_safety_limits(inputs.nav_suggestion.command, sectors)
+        if inputs.nav_suggestion.mode == "RECOVERY":
+            command, recovery_debug = self._stabilize_recovery_command(command, sectors, now)
+            safety_debug.update(recovery_debug)
         debug = dict(inputs.nav_suggestion.debug)
         debug.update(safety_debug)
         return self._output(
@@ -224,7 +230,8 @@ class BehaviorArbiter:
         right = sectors.distance("right")
         if front_center is not None and front_center < self.front_stop_distance:
             return f"FRONT_CENTER_TOO_CLOSE_{front_center:.2f}m"
-        if front is not None and front < self.front_stop_distance:
+        front_sector_stop = self.front_stop_distance * 0.75
+        if front is not None and front < front_sector_stop:
             return f"FRONT_TOO_CLOSE_{front:.2f}m"
         if left is not None and left < self.side_stop_distance:
             return f"LEFT_SIDE_TOO_CLOSE_{left:.2f}m"
@@ -299,6 +306,7 @@ class BehaviorArbiter:
             "safety_input_linear_x": command.linear_x,
             "safety_input_angular_z": command.angular_z,
             "corner_yaw_veto": "none",
+            "corner_opening_turn": "none",
             "corner_slowdown": False,
             "side_yaw_veto": "none",
             "anti_spin_limited": False,
@@ -306,7 +314,7 @@ class BehaviorArbiter:
         }
 
         if front is not None and front < self.slow_distance:
-            linear = min(linear, 0.04)
+            linear = min(linear, max(self.corner_slow_speed, 0.04))
             debug["front_slowdown"] = True
         if front_left is not None and front_left < self.front_corner_avoid_distance:
             if self.enable_corner_slowdown:
@@ -324,6 +332,26 @@ class BehaviorArbiter:
             if self.enable_corner_yaw_veto and yaw < 0.0:
                 yaw = max(yaw, 0.0)
                 debug["corner_yaw_veto"] = "front_right"
+        if front is not None and front < self.slow_distance:
+            min_curve_yaw = max(0.24, self.turns.turn_speed * 0.55)
+            if (
+                front_left is not None
+                and front_right is not None
+                and front_left < self.front_corner_avoid_distance
+                and front_right >= self.front_corner_avoid_distance
+            ):
+                yaw = min(yaw, -min_curve_yaw)
+                linear = min(linear, max(self.corner_slow_speed, 0.035))
+                debug["corner_opening_turn"] = "right"
+            elif (
+                front_left is not None
+                and front_right is not None
+                and front_right < self.front_corner_avoid_distance
+                and front_left >= self.front_corner_avoid_distance
+            ):
+                yaw = max(yaw, min_curve_yaw)
+                linear = min(linear, max(self.corner_slow_speed, 0.035))
+                debug["corner_opening_turn"] = "left"
         if self.enable_side_yaw_veto and left is not None and left < self.side_stop_distance * 1.6 and yaw > 0.0:
             yaw = min(yaw, 0.0)
             debug["side_yaw_veto"] = "left"
@@ -362,6 +390,65 @@ class BehaviorArbiter:
         debug["safety_output_linear_x"] = linear
         debug["safety_output_angular_z"] = yaw
         return TwistCommand(linear, yaw), debug
+
+    def _stabilize_recovery_command(
+        self, command: TwistCommand, sectors: SectorMap, now: float
+    ) -> tuple[TwistCommand, Dict[str, float | str | bool]]:
+        debug: Dict[str, float | str | bool] = {
+            "recovery_unstick": "none",
+            "recovery_turn_latch": "none",
+        }
+
+        front = sectors.distance("front")
+        if front is None or front >= self.slow_distance:
+            self._recovery_turn_sign = 0.0
+            self._recovery_turn_until = 0.0
+            return command, debug
+
+        left_score = self._turn_side_score(sectors.distance("front_left"), sectors.distance("left"))
+        right_score = self._turn_side_score(sectors.distance("front_right"), sectors.distance("right"))
+        debug["recovery_left_score"] = left_score
+        debug["recovery_right_score"] = right_score
+
+        yaw = command.angular_z
+        if abs(yaw) > 1e-6:
+            desired_sign = 1.0 if yaw > 0.0 else -1.0
+            if now < self._recovery_turn_until and self._recovery_turn_sign != 0.0:
+                if desired_sign != self._recovery_turn_sign:
+                    yaw = abs(yaw) * self._recovery_turn_sign
+                    debug["recovery_turn_latch"] = "held_previous_direction"
+                else:
+                    debug["recovery_turn_latch"] = "same_direction"
+            else:
+                self._recovery_turn_sign = desired_sign
+                debug["recovery_turn_latch"] = "started"
+            self._recovery_turn_until = now + 1.2
+            return TwistCommand(command.linear_x, yaw), debug
+
+        if now < self._recovery_turn_until and self._recovery_turn_sign != 0.0:
+            yaw = self._recovery_turn_sign * max(0.24, self.turns.turn_speed * 0.65)
+            debug["recovery_unstick"] = "latched_turn"
+            debug["recovery_unstick_yaw"] = yaw
+            return TwistCommand(0.0, yaw), debug
+
+        if max(left_score, right_score) < self.turn_clearance:
+            debug["recovery_unstick"] = "no_side_clearance"
+            return command, debug
+
+        turn_sign = 1.0 if left_score >= right_score else -1.0
+        yaw = turn_sign * max(0.24, self.turns.turn_speed * 0.65)
+        self._recovery_turn_sign = turn_sign
+        self._recovery_turn_until = now + 1.2
+        debug["recovery_unstick"] = "turn_toward_left" if turn_sign > 0.0 else "turn_toward_right"
+        debug["recovery_unstick_yaw"] = yaw
+        return TwistCommand(0.0, yaw), debug
+
+    @staticmethod
+    def _turn_side_score(front_side: Optional[float], side: Optional[float]) -> float:
+        values = [value for value in (front_side, side) if value is not None]
+        if not values:
+            return 0.0
+        return min(values)
 
     def _base_debug(self) -> Dict[str, float | str | bool]:
         debug: Dict[str, float | str | bool] = {

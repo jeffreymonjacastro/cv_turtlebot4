@@ -108,8 +108,14 @@ def _clean_range(raw: float, range_min: float, range_max: float) -> Optional[flo
     return min(float(raw), float(range_max))
 
 
-def scan_to_points(scan) -> Tuple[ScanPoint, ...]:
-    """Convert a ROS-like LaserScan object into cleaned angle/range points."""
+def scan_to_points(scan, *, angle_offset_deg: float = 0.0) -> Tuple[ScanPoint, ...]:
+    """Convert a ROS-like LaserScan object into cleaned angle/range points.
+
+    ``angle_offset_deg`` rotates scan-frame angles into the robot base frame.
+    Use it when the LiDAR frame is mounted yawed relative to the TurtleBot
+    forward axis, for example +90 degrees when the LiDAR's zero angle points
+    toward the robot's left side.
+    """
     ranges = list(getattr(scan, "ranges", []) or [])
     range_min = float(getattr(scan, "range_min", 0.0) or 0.0)
     range_max = float(getattr(scan, "range_max", 12.0) or 12.0)
@@ -121,7 +127,7 @@ def scan_to_points(scan) -> Tuple[ScanPoint, ...]:
         cleaned = _clean_range(float(raw), range_min, range_max)
         if cleaned is None:
             continue
-        angle_deg = math.degrees(angle_min + index * angle_increment)
+        angle_deg = math.degrees(angle_min + index * angle_increment) + angle_offset_deg
         points.append(ScanPoint(normalize_angle_deg(angle_deg), cleaned))
     return tuple(points)
 
@@ -139,9 +145,14 @@ def _stats_for_points(name: str, values: Iterable[float]) -> SectorStats:
     )
 
 
-def extract_sectors(scan, sector_degrees: Dict[str, Tuple[float, float]] = SECTOR_DEGREES) -> SectorMap:
+def extract_sectors(
+    scan,
+    sector_degrees: Dict[str, Tuple[float, float]] = SECTOR_DEGREES,
+    *,
+    angle_offset_deg: float = 0.0,
+) -> SectorMap:
     """Build robust min/median distances for each navigation sector."""
-    points = scan_to_points(scan)
+    points = scan_to_points(scan, angle_offset_deg=angle_offset_deg)
     sectors: Dict[str, SectorStats] = {}
     for name, (start_deg, end_deg) in sector_degrees.items():
         sector_values = [
@@ -219,4 +230,3 @@ def largest_free_gap(
         if best is None or candidate.score > best.score:
             best = candidate
     return best
-

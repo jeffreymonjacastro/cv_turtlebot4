@@ -37,6 +37,17 @@ def test_wall_follow_yaws_away_from_close_side_walls():
     assert right_suggestion.command.angular_z > 0.0
 
 
+def test_wall_follow_recovery_does_not_return_zero_when_front_is_blocked():
+    sectors = extract_sectors(corridor_scan(front=0.34, front_center=0.34, left=0.85, right=0.35))
+    module = create_navigation_module("wall_follow", **nav_kwargs(load_replay_profile("wall_follow")))
+
+    suggestion = module.compute(NavigationObservation(sectors, now=20.0, dt=0.1))
+
+    assert suggestion.mode == "RECOVERY"
+    assert suggestion.command.linear_x == 0.0
+    assert abs(suggestion.command.angular_z) > 0.0
+
+
 def test_synthetic_replay_summarizes_stale_lidar_as_safe_stop(tmp_path):
     scenario = build_scenarios(default_duration_s=1.0)["stale_lidar"]
     params = load_replay_profile("wall_follow")

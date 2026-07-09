@@ -26,6 +26,24 @@ def test_turn_controller_runs_left_turn_then_alignment():
     assert aligning.state in {"ALIGNING_AFTER_TURN", "NAVIGATE"}
 
 
+def test_turn_controller_uturn_uses_180_degree_timing():
+    sectors = extract_sectors(corridor_scan(front=2.0, left=0.8, right=0.8))
+    controller = TurnController(
+        turn_speed=1.0,
+        turn_degrees=90.0,
+        settle_seconds=0.05,
+        align_max_seconds=0.5,
+    )
+
+    assert controller.start("UTURN", now=100.0)
+    turning = controller.step(sectors, now=100.0 + controller.turn_seconds + 0.01)
+    assert turning.state == "TURNING_UTURN"
+    assert turning.command.angular_z > 0.0
+
+    settling = controller.step(sectors, now=100.0 + controller.turn_seconds * 2.0 + 0.01)
+    assert settling.state == "SETTLING_AFTER_TURN"
+
+
 def test_turn_controller_times_out_alignment_when_sides_are_missing():
     sectors = extract_sectors(corridor_scan(front=2.0, left=0.8, right=0.8))
     no_side_sectors = extract_sectors(corridor_scan(front=2.0, left=0.01, right=0.01))

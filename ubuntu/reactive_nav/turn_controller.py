@@ -38,7 +38,9 @@ class TurnController:
         align_same_direction_only: bool = True,
     ):
         self.turn_speed = abs(turn_speed)
-        self.turn_seconds = abs(turn_degrees) / 57.2957795 / max(0.05, self.turn_speed)
+        self.turn_degrees = abs(turn_degrees)
+        self.turn_seconds = self.turn_degrees / 57.2957795 / max(0.05, self.turn_speed)
+        self.active_turn_seconds = self.turn_seconds
         self.settle_seconds = settle_seconds
         self.align_max_seconds = align_max_seconds
         self.align_yaw_limit = align_yaw_limit
@@ -64,12 +66,14 @@ class TurnController:
 
     def start(self, direction: str, now: Optional[float] = None) -> bool:
         direction = direction.upper()
-        if direction not in ("LEFT", "RIGHT"):
+        if direction not in ("LEFT", "RIGHT", "UTURN"):
             return False
         if self.active:
             return False
         self.direction = direction
         self.last_direction = direction
+        turn_degrees = self.turn_degrees * 2.0 if direction == "UTURN" else self.turn_degrees
+        self.active_turn_seconds = turn_degrees / 57.2957795 / max(0.05, self.turn_speed)
         self.phase = "TURNING"
         self.phase_started = now if now is not None else time.monotonic()
         self.started_at = self.phase_started
@@ -86,10 +90,10 @@ class TurnController:
             return TurnStep(TwistCommand(), False, "IDLE", "NO_ACTIVE_TURN", self.snapshot())
 
         elapsed = now - self.phase_started
-        sign = 1.0 if self.direction == "LEFT" else -1.0
+        sign = 1.0 if self.direction in ("LEFT", "UTURN") else -1.0
 
         if self.phase == "TURNING":
-            if elapsed < self.turn_seconds:
+            if elapsed < self.active_turn_seconds:
                 return TurnStep(
                     TwistCommand(0.0, sign * self.turn_speed),
                     True,

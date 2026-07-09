@@ -73,7 +73,11 @@ def read_signal_state(
         return SignalState(reason=f"read_error:{exc}")
 
     timestamp = float(payload.get("timestamp") or 0.0)
-    age = time.time() - timestamp if timestamp > 0.0 else math.inf
+    wall_now = time.time()
+    mtime = path.stat().st_mtime
+    timestamp_age = wall_now - timestamp if timestamp > 0.0 else math.inf
+    mtime_age = wall_now - mtime if mtime > 0.0 else math.inf
+    age = min(timestamp_age, mtime_age)
     direction = _normalize_signal_direction(payload)
     confidence = float(payload.get("confidence") or 0.0)
     area_ratio = float(payload.get("bbox_area_ratio") or payload.get("area_ratio") or 0.0)
@@ -95,14 +99,16 @@ def read_signal_state(
         f"{payload.get('source_frame_time')}:{timestamp:.6f}:"
         f"{payload.get('bbox_xyxy') or payload.get('bbox')}"
     )
-    reason = "fresh" if not stale else f"stale:{age:.2f}s"
+    freshness_source = "mtime" if mtime_age < timestamp_age else "timestamp"
+    reason = "fresh" if not stale else f"stale:{age:.2f}s/{freshness_source}"
+    signal_timestamp = wall_now - age if math.isfinite(age) else timestamp
     return SignalState(
         direction=direction,
         confidence=confidence,
         bbox_area_ratio=area_ratio,
         bbox_center_x_ratio=center_x,
         actionable=actionable,
-        timestamp=timestamp,
+        timestamp=signal_timestamp,
         stale=stale,
         event_id=event_id,
         reason=reason,
@@ -160,6 +166,7 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("auto_discover_scan", True)
             self.declare_parameter("cmd_topic", "/cmd_vel")
             self.declare_parameter("cmd_msg_type", "TwistStamped")
+            self.declare_parameter("lidar_yaw_offset_deg", 90.0)
             self.declare_parameter("dry_run", True)
             self.declare_parameter("enable_motion", False)
             self.declare_parameter("publish_zero_in_dry_run", True)
@@ -168,18 +175,18 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("profile_name", "wall_follow_safe")
             self.declare_parameter("nav_module", "wall_follow")
 
-            self.declare_parameter("base_speed", 0.10)
-            self.declare_parameter("narrow_speed", 0.06)
-            self.declare_parameter("turn_slow_speed", 0.07)
+            self.declare_parameter("base_speed", 0.13)
+            self.declare_parameter("narrow_speed", 0.07)
+            self.declare_parameter("turn_slow_speed", 0.08)
             self.declare_parameter("turn_slow_yaw_threshold", 0.24)
             self.declare_parameter("max_yaw", 0.65)
             self.declare_parameter("wall_kp", 0.45)
             self.declare_parameter("wall_kd", 0.04)
-            self.declare_parameter("front_clear_distance", 0.55)
+            self.declare_parameter("front_clear_distance", 0.50)
             self.declare_parameter("recovery_clearance", 0.42)
-            self.declare_parameter("corner_slow_speed", 0.035)
-            self.declare_parameter("side_avoid_distance", 0.34)
-            self.declare_parameter("front_corner_avoid_distance", 0.62)
+            self.declare_parameter("corner_slow_speed", 0.055)
+            self.declare_parameter("side_avoid_distance", 0.29)
+            self.declare_parameter("front_corner_avoid_distance", 0.56)
             self.declare_parameter("avoidance_gain", 0.65)
             self.declare_parameter("enable_corner_yaw_veto", True)
             self.declare_parameter("enable_corner_slowdown", True)
@@ -202,12 +209,12 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("focm_alpha", 40.0)
             self.declare_parameter("focm_goal_heading_deg", 0.0)
 
-            self.declare_parameter("front_stop_distance", 0.32)
-            self.declare_parameter("front_stop_clear_distance", 0.40)
+            self.declare_parameter("front_stop_distance", 0.28)
+            self.declare_parameter("front_stop_clear_distance", 0.36)
             self.declare_parameter("side_stop_distance", 0.14)
             self.declare_parameter("side_stop_clear_distance", 0.20)
             self.declare_parameter("emergency_clear_cycles", 3)
-            self.declare_parameter("slow_distance", 0.55)
+            self.declare_parameter("slow_distance", 0.48)
             self.declare_parameter("turn_clearance", 0.42)
             self.declare_parameter("turn_speed", 0.45)
             self.declare_parameter("turn_degrees", 90.0)
@@ -254,6 +261,7 @@ def run_ros_node(args=None) -> None:
             self.auto_discover_scan = self._param_bool("auto_discover_scan")
             self.cmd_topic = self._param_str("cmd_topic")
             self.cmd_msg_type = self._param_str("cmd_msg_type").lower()
+            self.lidar_yaw_offset_deg = self._param_float("lidar_yaw_offset_deg")
             self.dry_run = self._param_bool("dry_run")
             self.enable_motion = self._param_bool("enable_motion")
             self.publish_zero_in_dry_run = self._param_bool("publish_zero_in_dry_run")
@@ -277,6 +285,7 @@ def run_ros_node(args=None) -> None:
             self.image_count = 0
             self.qr_frame_counter = 0
             self.last_qr_time = 0.0
+            self.last_qr_duplicate_log_time = 0.0
             self.qr_detector = None
             self.bridge = None
             self.image_sub = None
@@ -405,6 +414,7 @@ def run_ros_node(args=None) -> None:
                 "[INIT] reactive navigator started "
                 f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
                 f"cmd={self._cmd_message_kind}:{self.cmd_topic} profile={self.profile_name} nav={self.nav_module.name} "
+                f"lidar_yaw_offset_deg={self.lidar_yaw_offset_deg:.1f} "
                 f"log={self._param_str('persistent_log_path') if self._param_bool('persistent_log_enabled') else 'disabled'}",
             )
 
@@ -533,7 +543,7 @@ def run_ros_node(args=None) -> None:
             self.latest_scan = msg
             self.last_scan_time = time.monotonic()
             self.scan_count += 1
-            self.latest_sectors = extract_sectors(msg)
+            self.latest_sectors = extract_sectors(msg, angle_offset_deg=self.lidar_yaw_offset_deg)
 
         def image_callback(self, msg) -> None:
             self.last_image_time = time.monotonic()
@@ -547,7 +557,11 @@ def run_ros_node(args=None) -> None:
                 return
             try:
                 cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-                content, _, _ = self.qr_detector.detectAndDecode(cv_img)
+                detected, points = self.qr_detector.detect(cv_img)
+                if not detected or not self._valid_qr_points(points):
+                    return
+                decoded = self.qr_detector.decode(cv_img, points)
+                content = decoded[0] if isinstance(decoded, tuple) else decoded
             except Exception as exc:
                 self.diag.log("WARN", f"[QR] decode error: {exc}")
                 return
@@ -564,11 +578,29 @@ def run_ros_node(args=None) -> None:
             )
             if event is None:
                 return
-            self.last_qr_time = time.monotonic()
             if event.logged:
+                self.last_qr_time = time.monotonic()
                 self.diag.log("INFO", f"[QR] logged content={event.content!r} path={event.path}")
             elif event.duplicate:
-                self.diag.log("INFO", f"[QR] duplicate ignored content={event.content!r}")
+                now = time.monotonic()
+                if now - self.last_qr_duplicate_log_time >= 5.0:
+                    self.last_qr_duplicate_log_time = now
+                    self.diag.log("INFO", f"[QR] duplicate ignored content={event.content!r}")
+
+        def _valid_qr_points(self, points) -> bool:
+            if points is None:
+                return False
+            try:
+                raw = points.reshape(-1, 2)
+            except Exception:
+                return False
+            if len(raw) < 4:
+                return False
+            area = 0.0
+            for idx, point in enumerate(raw):
+                nxt = raw[(idx + 1) % len(raw)]
+                area += float(point[0]) * float(nxt[1]) - float(nxt[0]) * float(point[1])
+            return abs(area) * 0.5 > 1.0
 
         def hazard_callback(self, msg) -> None:
             detections = list(getattr(msg, "detections", []) or [])
@@ -918,7 +950,8 @@ def run_ros_node(args=None) -> None:
                     f"state={output.state} reason={output.reason} "
                     f"cmd=({output.command.linear_x:.3f},{output.command.angular_z:.3f}) "
                     f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
-                    f"scan_topic={self.current_scan_topic or 'none'} scan_count={self.scan_count} "
+                    f"scan_topic={self.current_scan_topic or 'none'} "
+                    f"lidar_yaw_offset={self.lidar_yaw_offset_deg:.1f} scan_count={self.scan_count} "
                     f"lidar_age={self._fmt_age(freshness.lidar_age_s)} "
                     f"image_age={self._fmt_age(freshness.image_age_s)} "
                     f"signal={self.last_signal.direction}/{self.last_signal.reason} "
