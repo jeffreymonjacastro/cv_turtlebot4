@@ -1,0 +1,7 @@
+path: /kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt
+train: images/train
+val: images/val
+names:
+  0: left-arrow
+  1: right-arrow
+  2: stop-signal

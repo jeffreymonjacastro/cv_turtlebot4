@@ -7,8 +7,10 @@ from pathlib import Path
 
 import cv2
 
-CLASSES = ["left-arrow", "right-arrow", "stop-signal"]
+CLASSES = ["left-arrow", "right-arrow", "stop-signal", "meta"]
 CLASS_TO_ID = {name: idx for idx, name in enumerate(CLASSES)}
+CLASS_ALIASES = {"stop-signal-inverted": "stop-signal"}
+SOURCE_CLASSES = CLASSES + sorted(CLASS_ALIASES)
 
 
 def repo_root():
@@ -17,7 +19,7 @@ def repo_root():
 
 def parse_args():
     root = repo_root()
-    default_source = root / "output" / "input"
+    default_source = root / "data"
     default_out = root / "labels-gt" / "dataset"
     parser = argparse.ArgumentParser(
         description="Annotate one YOLO detection bbox per signal image."
@@ -28,21 +30,31 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--redo", action="store_true", help="Re-annotate existing labels.")
     parser.add_argument("--limit", type=int, default=0, help="Annotate at most N pending images.")
+    parser.add_argument(
+        "--classes",
+        nargs="+",
+        choices=SOURCE_CLASSES,
+        default=SOURCE_CLASSES,
+        help="Source folders to annotate. stop-signal-inverted is labeled as stop-signal.",
+    )
     return parser.parse_args()
 
 
-def image_paths(source):
+def image_paths(source, classes):
     rows = []
-    for class_name in CLASSES:
+    for class_name in classes:
         class_dir = source / class_name
-        rows.extend((class_name, path) for path in sorted(class_dir.glob("*.jpg")))
+        if class_dir.is_dir():
+            rows.extend((class_name, path) for path in sorted(class_dir.glob("*.jpg")))
+        elif source.name == class_name:
+            rows.extend((class_name, path) for path in sorted(source.glob("*.jpg")))
     return rows
 
 
-def split_map(rows, val_ratio, seed):
+def split_map(rows, classes, val_ratio, seed):
     splits = {}
     rng = random.Random(seed)
-    for class_name in CLASSES:
+    for class_name in classes:
         class_rows = [path for cls, path in rows if cls == class_name]
         shuffled = class_rows[:]
         rng.shuffle(shuffled)
@@ -55,6 +67,10 @@ def split_map(rows, val_ratio, seed):
 
 def output_name(class_name, image_path):
     return f"{class_name}_{image_path.name}"
+
+
+def label_class(class_name):
+    return CLASS_ALIASES.get(class_name, class_name)
 
 
 def label_path(out, split, class_name, image_path):
@@ -100,9 +116,9 @@ def write_data_yaml(out):
     (out / "data.yaml").write_text(text, encoding="utf-8")
 
 
-def write_state(out, total, annotated, skipped):
+def write_state(out, classes, total, annotated, skipped):
     payload = {
-        "classes": CLASSES,
+        "classes": classes,
         "total_images": total,
         "annotated": annotated,
         "skipped_this_run": skipped,
@@ -205,7 +221,7 @@ def annotate_one(class_name, image_path, split, out, redo):
     dst_image.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(image_path, dst_image)
     label_file.write_text(
-        yolo_line(CLASS_TO_ID[class_name], (x, y, w, h), width, height),
+        yolo_line(CLASS_TO_ID[label_class(class_name)], (x, y, w, h), width, height),
         encoding="utf-8",
     )
     return "annotated"
@@ -213,11 +229,11 @@ def annotate_one(class_name, image_path, split, out, redo):
 
 def main():
     args = parse_args()
-    rows = image_paths(args.source)
+    rows = image_paths(args.source, args.classes)
     if not rows:
         raise SystemExit(f"No JPG images found under {args.source}")
 
-    splits = split_map(rows, args.val_ratio, args.seed)
+    splits = split_map(rows, args.classes, args.val_ratio, args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
     write_data_yaml(args.out)
 
@@ -244,9 +260,9 @@ def main():
             skipped += 1
         else:
             print(f"status={status}: {image_path}")
-        write_state(args.out, total, annotated, skipped)
+        write_state(args.out, args.classes, total, annotated, skipped)
 
-    write_state(args.out, total, annotated, skipped)
+    write_state(args.out, args.classes, total, annotated, skipped)
     print(f"\nDone. Annotated labels: {annotated}/{total}. Skipped this run: {skipped}.")
     print(f"Dataset YAML: {args.out / 'data.yaml'}")
 

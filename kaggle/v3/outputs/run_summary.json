@@ -1,0 +1,89 @@
+{
+  "status": "complete",
+  "stage": "complete",
+  "dataset": "jeffreyamc/yolo-signals-manual-gt",
+  "model": "yolo26n.pt",
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal"
+  ],
+  "artifacts": [
+    "data_v3_runtime.yaml",
+    "dataset_summary.json",
+    "best.pt",
+    "last.pt",
+    "args.yaml",
+    "results.csv",
+    "results.png",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "labels.jpg",
+    "BoxF1_curve.png",
+    "BoxP_curve.png",
+    "BoxPR_curve.png",
+    "BoxR_curve.png",
+    "train_batch0.jpg",
+    "train_batch1.jpg",
+    "train_batch2.jpg",
+    "val_batch0_labels.jpg",
+    "val_batch0_pred.jpg",
+    "val_batch1_labels.jpg",
+    "val_batch1_pred.jpg",
+    "val_batch2_labels.jpg",
+    "val_batch2_pred.jpg",
+    "metrics.json",
+    "sample_predictions.csv",
+    "qualitative_grid.jpg",
+    "qualitative_predictions.zip",
+    "run_summary.json"
+  ],
+  "data_root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+  "data_yaml": "/kaggle/working/data_v3_runtime.yaml",
+  "dataset_summary": {
+    "root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+    "splits": {
+      "train": {
+        "images": 350,
+        "labels": 350,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 110,
+          "right-arrow": 101,
+          "stop-signal": 139
+        }
+      },
+      "val": {
+        "images": 88,
+        "labels": 88,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 28,
+          "right-arrow": 26,
+          "stop-signal": 34
+        }
+      }
+    },
+    "class_counts": {
+      "left-arrow": 138,
+      "right-arrow": 127,
+      "stop-signal": 173
+    }
+  },
+  "metrics": {
+    "map50": 0.9854989129307118,
+    "map50_95": 0.8377848695745819,
+    "precision": 0.9422764549994346,
+    "recall": 0.9225527645339575,
+    "fitness": 0.8377848695745819,
+    "model": "yolo26n.pt",
+    "imgsz": 640,
+    "epochs_requested": 80,
+    "classes": [
+      "left-arrow",
+      "right-arrow",
+      "stop-signal"
+    ]
+  },
+  "qualitative_sample_count": 12
+}

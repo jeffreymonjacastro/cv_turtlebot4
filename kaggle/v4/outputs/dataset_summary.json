@@ -1,0 +1,54 @@
+{
+  "root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+  "splits": {
+    "train": {
+      "images": 404,
+      "labels": 404,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 110,
+        "meta": 16,
+        "right-arrow": 101,
+        "stop-signal": 177
+      },
+      "source_counts": {
+        "left-arrow": 110,
+        "meta": 16,
+        "right-arrow": 101,
+        "stop-signal-inverted": 38,
+        "stop-signal": 139
+      }
+    },
+    "val": {
+      "images": 102,
+      "labels": 102,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 28,
+        "meta": 4,
+        "right-arrow": 26,
+        "stop-signal": 44
+      },
+      "source_counts": {
+        "left-arrow": 28,
+        "meta": 4,
+        "right-arrow": 26,
+        "stop-signal-inverted": 10,
+        "stop-signal": 34
+      }
+    }
+  },
+  "class_counts": {
+    "left-arrow": 138,
+    "right-arrow": 127,
+    "stop-signal": 221,
+    "meta": 20
+  },
+  "source_counts": {
+    "left-arrow": 138,
+    "meta": 20,
+    "right-arrow": 127,
+    "stop-signal-inverted": 48,
+    "stop-signal": 173
+  }
+}

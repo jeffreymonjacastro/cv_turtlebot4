@@ -1,0 +1,15 @@
+{
+  "map50": 0.9854989129307118,
+  "map50_95": 0.8377848695745819,
+  "precision": 0.9422764549994346,
+  "recall": 0.9225527645339575,
+  "fitness": 0.8377848695745819,
+  "model": "yolo26n.pt",
+  "imgsz": 640,
+  "epochs_requested": 80,
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal"
+  ]
+}
