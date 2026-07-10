@@ -18,6 +18,7 @@ import time
 import cv2
 import rclpy
 from cv_bridge import CvBridge
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -32,7 +33,14 @@ class DebugImageUdpSender(Node):
         self.declare_parameter("pairing_code", "ROBOT_A_2")
         self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
         self.declare_parameter("jpeg_quality", 80)
-        self.declare_parameter("send_hz", 5.0)
+        self.declare_parameter(
+            "send_hz",
+            5.0,
+            ParameterDescriptor(
+                description="Maximum debug image send rate in Hz.",
+                dynamic_typing=True,
+            ),
+        )
 
         self.port = self._param_int("port")
         self.robot_name = self._param_str("robot_name")
