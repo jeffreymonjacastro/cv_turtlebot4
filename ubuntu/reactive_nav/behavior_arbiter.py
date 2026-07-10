@@ -29,6 +29,7 @@ class SignalState:
     stale: bool = True
     event_id: str = ""
     reason: str = "missing"
+    raw_class: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,28 +68,52 @@ class SignDebouncer:
         self._recent: Deque[str] = deque(maxlen=self.confirm_window)
         self._cooldown_until = 0.0
         self._consumed_events: set[str] = set()
+        self._last_diagnostics: Dict[str, float | str | bool] = {
+            "yolo_event_status": "idle",
+            "yolo_rejection_reason": "none",
+            "yolo_confirmation_count": 0.0,
+            "yolo_confirmation_required": float(self.confirm_count),
+            "yolo_confirmation_progress": "0/0",
+            "yolo_event": "NONE",
+        }
 
     def update(self, signal: SignalState, now: float) -> Optional[str]:
         if now < self._cooldown_until:
             self._recent.append("none")
+            self._set_diagnostics(signal, "rejected", "cooldown_active")
             return None
         if signal.stale or not signal.actionable:
             self._recent.append("none")
+            self._set_diagnostics(
+                signal,
+                "rejected",
+                "stale" if signal.stale else "not_actionable",
+            )
             return None
         direction = signal.direction.lower()
         if direction not in ("left", "right", "stop"):
             self._recent.append("none")
+            self._set_diagnostics(signal, "rejected", f"unsupported_direction:{direction}")
             return None
-        if signal.confidence < self.min_confidence or signal.bbox_area_ratio < self.min_area_ratio:
+        if signal.confidence < self.min_confidence:
             self._recent.append("none")
+            self._set_diagnostics(signal, "rejected", "low_confidence")
+            return None
+        if signal.bbox_area_ratio < self.min_area_ratio:
+            self._recent.append("none")
+            self._set_diagnostics(signal, "rejected", "low_area_ratio")
             return None
 
         self._recent.append(direction)
-        if sum(1 for item in self._recent if item == direction) < self.confirm_count:
+        count = sum(1 for item in self._recent if item == direction)
+        if count < self.confirm_count:
+            self._set_diagnostics(signal, "candidate", "awaiting_confirmation", count=count)
             return None
 
         if self.event_id(signal) in self._consumed_events:
+            self._set_diagnostics(signal, "rejected", "event_already_consumed", count=count)
             return None
+        self._set_diagnostics(signal, "validated", "none", count=count, event=direction.upper())
         return direction.upper()
 
     def event_id(self, signal: SignalState) -> str:
@@ -106,6 +131,48 @@ class SignDebouncer:
     @property
     def cooldown_remaining(self) -> float:
         return max(0.0, self._cooldown_until - time.monotonic())
+
+    @property
+    def diagnostics(self) -> Dict[str, float | str | bool]:
+        payload = dict(self._last_diagnostics)
+        payload["sign_cooldown_remaining_s"] = self.cooldown_remaining
+        return payload
+
+    def mark_decision(self, *, status: str, rejection_reason: str = "none") -> None:
+        self._last_diagnostics = {
+            **self._last_diagnostics,
+            "yolo_event_status": status,
+            "yolo_rejection_reason": rejection_reason,
+        }
+
+    def _set_diagnostics(
+        self,
+        signal: SignalState,
+        status: str,
+        rejection_reason: str,
+        *,
+        count: Optional[int] = None,
+        event: Optional[str] = None,
+    ) -> None:
+        direction = signal.direction.lower()
+        observed_count = (
+            sum(1 for item in self._recent if item == direction)
+            if direction in ("left", "right", "stop")
+            else 0
+        )
+        if count is None:
+            count = observed_count
+        required = self.confirm_count
+        event_value = event or ("NONE" if direction == "none" else direction.upper())
+        self._last_diagnostics = {
+            "yolo_event_status": status,
+            "yolo_rejection_reason": rejection_reason,
+            "yolo_confirmation_count": float(count),
+            "yolo_confirmation_required": float(required),
+            "yolo_confirmation_progress": f"{count}/{required}",
+            "yolo_event": event_value,
+            "yolo_event_id": signal.event_id,
+        }
 
 
 class BehaviorArbiter:
@@ -198,14 +265,17 @@ class BehaviorArbiter:
         if confirmed in ("LEFT", "RIGHT"):
             turn_block = self._turn_block_reason(sectors, confirmed)
             if turn_block:
+                self.signs.mark_decision(status="rejected", rejection_reason=turn_block)
                 return self._output(TwistCommand(), "SIGN_CANDIDATE", turn_block, True)
             if self.turns.start(confirmed, now):
                 self.signs.consume(inputs.signal)
+                self.signs.mark_decision(status="accepted", rejection_reason="none")
                 step = self.turns.step(sectors, now)
                 return self._output(step.command, step.state, f"SIGN_CONFIRMED_{confirmed}", True, step.debug)
         if confirmed == "STOP":
             if self.turns.start("UTURN", now):
                 self.signs.consume(inputs.signal)
+                self.signs.mark_decision(status="accepted", rejection_reason="none")
                 step = self.turns.step(sectors, now)
                 return self._output(step.command, step.state, "STOP_SIGN_CONFIRMED_UTURN", True, step.debug)
 
@@ -483,7 +553,26 @@ class BehaviorArbiter:
             "sign_cooldown_remaining_s": self.signs.cooldown_remaining,
         }
         debug.update(self.turns.snapshot())
+        debug.update(self.signs.diagnostics)
         return debug
+
+    @staticmethod
+    def _command_source(state: str, reason: str) -> str:
+        if state == "EMERGENCY_STOP":
+            return "emergency_lidar_stop"
+        if state in {"TURNING_LEFT", "TURNING_RIGHT", "TURNING_UTURN", "SETTLING_AFTER_TURN", "ALIGNING_AFTER_TURN"}:
+            return "active_maneuver"
+        if state == "QR_SCAN":
+            return "qr_hold"
+        if state == "SIGN_CANDIDATE":
+            return "yolo_rejected_or_blocked"
+        if reason.startswith("SIGN_CONFIRMED") or reason.startswith("STOP_SIGN_CONFIRMED"):
+            return "yolo_sign"
+        if state in {"CORRIDOR_FOLLOW", "LEFT_WALL_FOLLOW", "RIGHT_WALL_FOLLOW", "RECOVERY", "FOLLOW_GAP", "FOCM"}:
+            return "navigation_module"
+        if state in {"SENSOR_CHECK", "IDLE"}:
+            return "safe_idle"
+        return "arbiter"
 
     def _output(
         self,
@@ -521,6 +610,7 @@ class BehaviorArbiter:
                 # recovery/safety shaping. This is an observation, not a behavior change.
                 "active_turn_bypasses_navigation_recovery": active_turn_path,
                 "active_turn_standard_safety_limits_applied": not active_turn_path,
+                "command_source": self._command_source(state, reason),
                 "recovery_entry": entering_recovery,
                 "recovery_elapsed_s": (
                     max(0.0, now - self._recovery_started_at)

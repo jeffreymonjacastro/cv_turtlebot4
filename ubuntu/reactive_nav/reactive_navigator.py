@@ -79,6 +79,7 @@ def read_signal_state(
     mtime_age = wall_now - mtime if mtime > 0.0 else math.inf
     age = min(timestamp_age, mtime_age)
     direction = _normalize_signal_direction(payload)
+    raw_class = str(payload.get("class_name") or payload.get("label") or payload.get("direction") or direction)
     confidence = float(payload.get("confidence") or 0.0)
     area_ratio = float(payload.get("bbox_area_ratio") or payload.get("area_ratio") or 0.0)
     center_x = float(payload.get("bbox_center_x_ratio") or payload.get("center_x_ratio") or 0.5)
@@ -112,7 +113,67 @@ def read_signal_state(
         stale=stale,
         event_id=event_id,
         reason=reason,
+        raw_class=raw_class,
     )
+
+
+def read_injected_qr_event(
+    path: str | Path,
+    *,
+    max_age_s: float,
+) -> Dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "missing",
+            "qr_event": "NONE",
+            "qr_event_status": "idle",
+            "qr_rejection_reason": "missing",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "read_error",
+            "qr_event": "NONE",
+            "qr_event_status": "rejected",
+            "qr_rejection_reason": f"read_error:{exc}",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+
+    timestamp = float(payload.get("timestamp") or 0.0)
+    age = time.time() - timestamp if timestamp > 0.0 else math.inf
+    content = payload.get("qr_content") or payload.get("payload") or payload.get("content")
+    content = str(content).strip() if content is not None else ""
+    stale = age > max_age_s
+    if not content:
+        status = "idle" if not payload else "rejected"
+        reason = "empty_payload"
+    elif stale:
+        status = "rejected"
+        reason = f"stale:{age:.2f}s"
+    else:
+        status = "candidate"
+        reason = "fresh"
+    return {
+        "raw_qr_payload": content or None,
+        "qr_decode_status": "decoded" if content else "empty",
+        "qr_event": content or "NONE",
+        "qr_event_status": status,
+        "qr_rejection_reason": reason if status == "rejected" else "none",
+        "fresh": bool(content and not stale),
+        "age_s": age if math.isfinite(age) else None,
+        "event_id": str(payload.get("event_id") or f"qr:{content}:{timestamp:.6f}"),
+        "source": str(payload.get("source") or "injection_file"),
+        "confidence": payload.get("confidence"),
+    }
 
 
 def load_profile_parameters(path: str | Path) -> Dict[str, Any]:
@@ -243,6 +304,8 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("qr_check_every_n_frames", 5)
             self.declare_parameter("qr_log_path", "output/qr_log.jsonl")
             self.declare_parameter("qr_confirm_count", 2)
+            self.declare_parameter("qr_injection_path", "output/qr_injection.json")
+            self.declare_parameter("max_qr_injection_age_s", 2.0)
 
             self.declare_parameter("telemetry_enabled", True)
             self.declare_parameter("telemetry_port", 6612)
@@ -288,6 +351,15 @@ def run_ros_node(args=None) -> None:
             self.qr_frame_counter = 0
             self.last_qr_time = 0.0
             self.last_qr_duplicate_log_time = 0.0
+            self.last_qr_supervision: Dict[str, Any] = {
+                "raw_qr_payload": None,
+                "qr_decode_status": "not_checked",
+                "qr_confirmation_progress": "0/0",
+                "qr_event": "NONE",
+                "qr_event_status": "idle",
+                "qr_rejection_reason": "none",
+                "qr_source": "none",
+            }
             self.qr_detector = None
             self.bridge = None
             self.image_sub = None
@@ -566,13 +638,40 @@ def run_ros_node(args=None) -> None:
                 cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
                 detected, points = self.qr_detector.detect(cv_img)
                 if not detected or not self._valid_qr_points(points):
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": None,
+                        "qr_decode_status": "not_detected",
+                        "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                        "qr_event": "NONE",
+                        "qr_event_status": "idle",
+                        "qr_rejection_reason": "not_detected",
+                        "qr_source": "camera",
+                    }
                     return
                 decoded = self.qr_detector.decode(cv_img, points)
                 content = decoded[0] if isinstance(decoded, tuple) else decoded
             except Exception as exc:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": None,
+                    "qr_decode_status": "decode_error",
+                    "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                    "qr_event": "NONE",
+                    "qr_event_status": "rejected",
+                    "qr_rejection_reason": f"decode_error:{exc}",
+                    "qr_source": "camera",
+                }
                 self.diag.log("WARN", f"[QR] decode error: {exc}")
                 return
             if not content:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": None,
+                    "qr_decode_status": "empty",
+                    "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                    "qr_event": "NONE",
+                    "qr_event_status": "rejected",
+                    "qr_rejection_reason": "empty_decode",
+                    "qr_source": "camera",
+                }
                 return
 
             context = self._distance_context()
@@ -583,12 +682,40 @@ def run_ros_node(args=None) -> None:
                 robot_state=self.last_state,
                 context=context,
             )
+            progress = self.qr_logger.confirmation_progress(content)
             if event is None:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": "decoded",
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "candidate",
+                    "qr_rejection_reason": "awaiting_confirmation",
+                    "qr_source": "camera",
+                }
                 return
             if event.logged:
                 self.last_qr_time = time.monotonic()
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": "decoded",
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "accepted",
+                    "qr_rejection_reason": "none",
+                    "qr_source": "camera",
+                }
                 self.diag.log("INFO", f"[QR] logged content={event.content!r} path={event.path}")
             elif event.duplicate:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": "decoded",
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "duplicate",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": "camera",
+                }
                 now = time.monotonic()
                 if now - self.last_qr_duplicate_log_time >= 5.0:
                     self.last_qr_duplicate_log_time = now
@@ -673,6 +800,71 @@ def run_ros_node(args=None) -> None:
                 center_max=self._param_float("sign_center_x_max"),
             )
 
+        def _process_injected_qr(self) -> None:
+            payload = read_injected_qr_event(
+                self._param_str("qr_injection_path"),
+                max_age_s=self._param_float("max_qr_injection_age_s"),
+            )
+            if not payload.get("fresh"):
+                if payload.get("qr_decode_status") not in ("missing", "empty"):
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": payload.get("raw_qr_payload"),
+                        "qr_decode_status": payload.get("qr_decode_status"),
+                        "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                        "qr_event": payload.get("qr_event", "NONE"),
+                        "qr_event_status": payload.get("qr_event_status", "rejected"),
+                        "qr_rejection_reason": payload.get("qr_rejection_reason", "not_fresh"),
+                        "qr_source": payload.get("source", "injection_file"),
+                        "raw_qr_age_s": payload.get("age_s"),
+                    }
+                return
+
+            content = str(payload.get("raw_qr_payload") or "")
+            event = self.qr_logger.observe(
+                content,
+                source=str(payload.get("source") or "injection_file"),
+                frame_id=str(payload.get("event_id") or ""),
+                robot_state=self.last_state,
+                confidence=payload.get("confidence"),
+                context=self._distance_context(),
+            )
+            progress = self.qr_logger.confirmation_progress(content)
+            if event is None:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "candidate",
+                    "qr_rejection_reason": "awaiting_confirmation",
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                }
+                return
+            if event.logged:
+                self.last_qr_time = time.monotonic()
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "accepted",
+                    "qr_rejection_reason": "none",
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                }
+            elif event.duplicate:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "duplicate",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                }
+
         def control_loop(self) -> None:
             from sensor_msgs.msg import LaserScan
             from rclpy.qos import qos_profile_sensor_data
@@ -684,6 +876,7 @@ def run_ros_node(args=None) -> None:
 
             signal = self._read_signal()
             self.last_signal = signal
+            self._process_injected_qr()
             sectors = self.latest_sectors
             lidar_age = math.inf if self.last_scan_time is None else now - self.last_scan_time
             lidar_fresh = lidar_age <= self.max_scan_age_s
@@ -832,13 +1025,53 @@ def run_ros_node(args=None) -> None:
                 "selected_gap_is_left": nav_debug.get("gap_selected_left"),
                 "selected_gap_is_right": nav_debug.get("gap_selected_right"),
             }
+            signal_age = None if signal.timestamp <= 0.0 else max(0.0, time.time() - signal.timestamp)
+            signal_debug = {
+                "raw_yolo_class": signal.raw_class or signal.direction,
+                "raw_yolo_confidence": self._json_float(signal.confidence),
+                "raw_yolo_age_s": self._json_float(signal_age),
+                "yolo_confirmation_progress": output_debug.get("yolo_confirmation_progress"),
+                "yolo_event": output_debug.get("yolo_event", signal.direction.upper()),
+                "yolo_event_status": output_debug.get("yolo_event_status"),
+                "yolo_rejection_reason": output_debug.get("yolo_rejection_reason"),
+            }
+            qr_debug = dict(self.last_qr_supervision)
+            active_maneuver = bool(output_debug.get("turn_active") or output_debug.get("active_turn_path"))
+            maneuver_phase = (
+                output.state
+                if output.state in {"TURNING_LEFT", "TURNING_RIGHT", "TURNING_UTURN", "SETTLING_AFTER_TURN", "ALIGNING_AFTER_TURN"}
+                else "none"
+            )
+            supervision = {
+                "timestamp": self._json_float(time.time()),
+                "current_state": output.state,
+                "previous_state": self.last_state,
+                "transition_reason": output.reason,
+                **signal_debug,
+                **qr_debug,
+                "active_maneuver": active_maneuver,
+                "maneuver_phase": maneuver_phase,
+                "maneuver_elapsed_s": self._json_float(turn_debug.get("turn_elapsed_s") or turn_debug.get("phase_elapsed_s")),
+                "suggested_linear_x": self._json_float(nav_suggestion.command.linear_x) if nav_suggestion is not None else None,
+                "suggested_angular_z": self._json_float(nav_suggestion.command.angular_z) if nav_suggestion is not None else None,
+                "arbiter_linear_x": self._json_float(requested_command.linear_x),
+                "arbiter_angular_z": self._json_float(requested_command.angular_z),
+                "published_linear_x": self._json_float(published_command.linear_x),
+                "published_angular_z": self._json_float(published_command.angular_z),
+                "command_source": output_debug.get("command_source", "unknown"),
+                "dry_run": self.dry_run,
+                "enable_motion": self.enable_motion,
+            }
             record = {
                 "record_schema": "reactive_nav_turn_recovery_v1",
+                "supervision_schema": "perception_fsm_supervision_v1",
                 "timestamp": self._json_float(time.time()),
                 "time_s": self._json_float(now),
                 "profile_name": self.profile_name,
+                "current_state": output.state,
                 "state": output.state,
                 "reason": output.reason,
+                "transition_reason": output.reason,
                 "previous_state": self.last_state,
                 "state_duration_s": self._json_float(state_duration_s),
                 "scan_topic": self.current_scan_topic or None,
@@ -863,6 +1096,7 @@ def run_ros_node(args=None) -> None:
                     "requested_angular_z": self._json_float(requested_command.angular_z),
                     "published_linear_x": self._json_float(published_command.linear_x),
                     "published_angular_z": self._json_float(published_command.angular_z),
+                    "command_source": output_debug.get("command_source", "unknown"),
                     "request_changed_by_publication": (
                         requested_command != published_command
                     ),
@@ -877,6 +1111,7 @@ def run_ros_node(args=None) -> None:
                     "debug": self._json_clean(nav_debug),
                 },
                 "arbiter_debug": self._json_clean(output_debug),
+                "supervision": self._json_clean(supervision),
                 "recovery": self._json_clean(recovery_debug),
                 "turn": turn_debug,
                 "emergency": self._json_clean(emergency_debug),
@@ -899,7 +1134,10 @@ def run_ros_node(args=None) -> None:
                     "stale": signal.stale,
                     "reason": signal.reason,
                     "event_id": signal.event_id,
+                    "raw_class": signal.raw_class,
+                    **self._json_clean(signal_debug),
                 },
+                "qr": self._json_clean(qr_debug),
             }
             self.run_logger.write(record)
 

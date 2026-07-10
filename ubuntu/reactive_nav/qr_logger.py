@@ -17,6 +17,8 @@ class QREvent:
     logged: bool
     duplicate: bool
     path: str
+    status: str = "logged"
+    reason: str = "none"
 
 
 class QRLogger:
@@ -69,7 +71,7 @@ class QRLogger:
 
         duplicate = content in self._seen
         if duplicate:
-            return QREvent(content, False, True, str(self.log_path))
+            return QREvent(content, False, True, str(self.log_path), status="duplicate", reason="already_logged")
 
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -85,12 +87,19 @@ class QRLogger:
         with self.log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=True) + "\n")
         self._seen.add(content)
-        return QREvent(content, True, False, str(self.log_path))
+        return QREvent(content, True, False, str(self.log_path), status="logged", reason="confirmed")
 
     def _recent_count(self, content: str) -> int:
         return sum(1 for item in self._recent if item == content)
 
+    def confirmation_count(self, content: Optional[str]) -> int:
+        if not content:
+            return 0
+        return self._recent_count(str(content).strip())
+
+    def confirmation_progress(self, content: Optional[str]) -> str:
+        return f"{min(self.confirmation_count(content), self.confirm_count)}/{self.confirm_count}"
+
     @property
     def seen(self) -> Iterable[str]:
         return tuple(sorted(self._seen))
-
