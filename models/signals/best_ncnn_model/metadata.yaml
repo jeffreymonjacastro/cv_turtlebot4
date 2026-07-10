@@ -1,0 +1,22 @@
+description: Ultralytics YOLO26n model trained on /kaggle/working/data_v5_runtime.yaml
+author: Ultralytics
+date: '2026-07-10T09:36:53.457470'
+version: 8.4.60
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 512
+- 512
+names:
+  0: left-arrow
+  1: right-arrow
+  2: stop-signal
+  3: meta
+args:
+  batch: 1
+  half: true
+channels: 3
+end2end: false

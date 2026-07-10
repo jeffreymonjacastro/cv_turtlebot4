@@ -1,0 +1,8 @@
+path: /kaggle/temp/yolo_signals_v5_prepared
+train: images/train
+val: images/val
+names:
+  0: left-arrow
+  1: right-arrow
+  2: stop-signal
+  3: meta

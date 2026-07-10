@@ -1,0 +1,45 @@
+{
+  "map50": 0.995,
+  "map50_95": 0.871368352435901,
+  "precision": 0.9951708028699124,
+  "recall": 0.9876334650382325,
+  "fitness": 0.871368352435901,
+  "model": "yolo26n.pt",
+  "imgsz": 640,
+  "epochs_requested": 120,
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal",
+    "meta"
+  ],
+  "augmentation": {
+    "hsv_h": 0.015,
+    "hsv_s": 0.5,
+    "hsv_v": 0.35,
+    "degrees": 0.0,
+    "translate": 0.08,
+    "scale": 0.35,
+    "shear": 0.0,
+    "fliplr": 0.0,
+    "flipud": 0.0,
+    "mosaic": 0.7,
+    "mixup": 0.05,
+    "copy_paste": 0.0,
+    "close_mosaic": 10
+  },
+  "stop_rotation_angles": [
+    -24,
+    -18,
+    -12,
+    12,
+    18,
+    24
+  ],
+  "map50_95_per_class": {
+    "left-arrow": 0.8723973636013109,
+    "right-arrow": 0.8677104670767829,
+    "stop-signal": 0.861887383358806,
+    "meta": 0.8834781957067046
+  }
+}

@@ -1,4 +1,4 @@
-path: .
+path: C:/Users/jeffr/GitHub/turtlebot/labels-gt/kaggle-dataset
 train: images/train
 val: images/val
 names:

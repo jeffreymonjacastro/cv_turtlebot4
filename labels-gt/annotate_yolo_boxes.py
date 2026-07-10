@@ -2,6 +2,7 @@
 import argparse
 import json
 import random
+import re
 import shutil
 from pathlib import Path
 
@@ -17,8 +18,8 @@ def repo_root():
 
 def parse_args():
     root = repo_root()
-    default_source = root / "output" / "input"
-    default_out = root / "labels-gt" / "dataset"
+    default_source = root / "data"
+    default_out = root / "labels-gt" / "kaggle-dataset"
     parser = argparse.ArgumentParser(
         description="Annotate one YOLO detection bbox per signal image."
     )
@@ -28,6 +29,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--redo", action="store_true", help="Re-annotate existing labels.")
     parser.add_argument("--limit", type=int, default=0, help="Annotate at most N pending images.")
+    parser.add_argument("--frame-start", type=int, default=0, help="Only annotate frames >= N.")
+    parser.add_argument("--frame-end", type=int, default=0, help="Only annotate frames <= N.")
     parser.add_argument(
         "--classes",
         nargs="+",
@@ -38,14 +41,38 @@ def parse_args():
     return parser.parse_args()
 
 
-def image_paths(source, classes):
+def frame_number(path):
+    match = re.search(r"frame_(\d+)", path.stem)
+    return int(match.group(1)) if match else None
+
+
+def frame_in_range(path, start, end):
+    number = frame_number(path)
+    if number is None:
+        return True
+    if start and number < start:
+        return False
+    if end and number > end:
+        return False
+    return True
+
+
+def image_paths(source, classes, frame_start=0, frame_end=0):
     rows = []
     for class_name in classes:
         class_dir = source / class_name
         if class_dir.is_dir():
-            rows.extend((class_name, path) for path in sorted(class_dir.glob("*.jpg")))
+            rows.extend(
+                (class_name, path)
+                for path in sorted(class_dir.glob("*.jpg"))
+                if frame_in_range(path, frame_start, frame_end)
+            )
         elif source.name == class_name:
-            rows.extend((class_name, path) for path in sorted(source.glob("*.jpg")))
+            rows.extend(
+                (class_name, path)
+                for path in sorted(source.glob("*.jpg"))
+                if frame_in_range(path, frame_start, frame_end)
+            )
     return rows
 
 
@@ -223,7 +250,7 @@ def annotate_one(class_name, image_path, split, out, redo):
 
 def main():
     args = parse_args()
-    rows = image_paths(args.source, args.classes)
+    rows = image_paths(args.source, args.classes, args.frame_start, args.frame_end)
     if not rows:
         raise SystemExit(f"No JPG images found under {args.source}")
 

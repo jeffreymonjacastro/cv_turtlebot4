@@ -1,8 +1,8 @@
 {
   "classes": [
-    "meta"
+    "stop-signal"
   ],
-  "total_images": 20,
-  "annotated": 20,
-  "skipped_this_run": 0
+  "total_images": 96,
+  "annotated": 94,
+  "skipped_this_run": 2
 }

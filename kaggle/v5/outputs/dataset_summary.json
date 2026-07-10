@@ -1,0 +1,33 @@
+{
+  "root": "/kaggle/temp/yolo_signals_v5_prepared",
+  "splits": {
+    "train": {
+      "images": 1895,
+      "labels": 1949,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 141,
+        "right-arrow": 130,
+        "stop-signal": 1528,
+        "meta": 150
+      }
+    },
+    "val": {
+      "images": 144,
+      "labels": 144,
+      "missing_label_files_or_empty": 0,
+      "class_counts": {
+        "left-arrow": 28,
+        "meta": 37,
+        "right-arrow": 26,
+        "stop-signal": 53
+      }
+    }
+  },
+  "class_counts": {
+    "left-arrow": 169,
+    "right-arrow": 156,
+    "stop-signal": 1581,
+    "meta": 187
+  }
+}

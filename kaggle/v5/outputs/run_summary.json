@@ -1,0 +1,189 @@
+{
+  "status": "complete",
+  "stage": "complete",
+  "dataset": "jeffreyamc/yolo-signals-manual-gt",
+  "model": "yolo26n.pt",
+  "stop_rotation_angles": [
+    -24,
+    -18,
+    -12,
+    12,
+    18,
+    24
+  ],
+  "augmentation": {
+    "hsv_h": 0.015,
+    "hsv_s": 0.5,
+    "hsv_v": 0.35,
+    "degrees": 0.0,
+    "translate": 0.08,
+    "scale": 0.35,
+    "shear": 0.0,
+    "fliplr": 0.0,
+    "flipud": 0.0,
+    "mosaic": 0.7,
+    "mixup": 0.05,
+    "copy_paste": 0.0,
+    "close_mosaic": 10
+  },
+  "artifacts": [
+    "augmentation_summary.json",
+    "data_v5_runtime.yaml",
+    "dataset_summary.json",
+    "best.pt",
+    "last.pt",
+    "args.yaml",
+    "results.csv",
+    "results.png",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "labels.jpg",
+    "BoxF1_curve.png",
+    "BoxP_curve.png",
+    "BoxPR_curve.png",
+    "BoxR_curve.png",
+    "train_batch0.jpg",
+    "train_batch1.jpg",
+    "train_batch2.jpg",
+    "val_batch0_labels.jpg",
+    "val_batch0_pred.jpg",
+    "val_batch1_labels.jpg",
+    "val_batch1_pred.jpg",
+    "val_batch2_labels.jpg",
+    "val_batch2_pred.jpg",
+    "metrics.json",
+    "sample_predictions.csv",
+    "qualitative_grid.jpg",
+    "composite_eval_predictions.csv",
+    "composite_eval_grid.jpg",
+    "qualitative_predictions.zip",
+    "composite_eval_predictions.zip",
+    "qualitative_results.zip",
+    "quantitative_metrics.zip",
+    "run_summary.json"
+  ],
+  "classes": [
+    "left-arrow",
+    "right-arrow",
+    "stop-signal",
+    "meta"
+  ],
+  "source_root": "/kaggle/input/datasets/jeffreyamc/yolo-signals-manual-gt",
+  "augmentation_summary": {
+    "stop_rotations": {
+      "angles": [
+        -24,
+        -18,
+        -12,
+        12,
+        18,
+        24
+      ],
+      "source_images": 214,
+      "created_images": 1284,
+      "skipped_mixed_labels": 0,
+      "skipped_unreadable": 0
+    },
+    "training_composites": {
+      "requested": 36,
+      "created": 36,
+      "classes_used": [
+        "left-arrow",
+        "right-arrow",
+        "stop-signal"
+      ]
+    },
+    "composite_eval": {
+      "requested": 12,
+      "created": 12,
+      "classes_used": [
+        "left-arrow",
+        "right-arrow",
+        "stop-signal"
+      ]
+    },
+    "note": "Ultralytics degrees is 0.0; stop-signal rotation augmentation is materialized offline only for pure stop-signal train images."
+  },
+  "data_root": "/kaggle/temp/yolo_signals_v5_prepared",
+  "data_yaml": "/kaggle/working/data_v5_runtime.yaml",
+  "dataset_summary": {
+    "root": "/kaggle/temp/yolo_signals_v5_prepared",
+    "splits": {
+      "train": {
+        "images": 1895,
+        "labels": 1949,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 141,
+          "right-arrow": 130,
+          "stop-signal": 1528,
+          "meta": 150
+        }
+      },
+      "val": {
+        "images": 144,
+        "labels": 144,
+        "missing_label_files_or_empty": 0,
+        "class_counts": {
+          "left-arrow": 28,
+          "meta": 37,
+          "right-arrow": 26,
+          "stop-signal": 53
+        }
+      }
+    },
+    "class_counts": {
+      "left-arrow": 169,
+      "right-arrow": 156,
+      "stop-signal": 1581,
+      "meta": 187
+    }
+  },
+  "metrics": {
+    "map50": 0.995,
+    "map50_95": 0.871368352435901,
+    "precision": 0.9951708028699124,
+    "recall": 0.9876334650382325,
+    "fitness": 0.871368352435901,
+    "model": "yolo26n.pt",
+    "imgsz": 640,
+    "epochs_requested": 120,
+    "classes": [
+      "left-arrow",
+      "right-arrow",
+      "stop-signal",
+      "meta"
+    ],
+    "augmentation": {
+      "hsv_h": 0.015,
+      "hsv_s": 0.5,
+      "hsv_v": 0.35,
+      "degrees": 0.0,
+      "translate": 0.08,
+      "scale": 0.35,
+      "shear": 0.0,
+      "fliplr": 0.0,
+      "flipud": 0.0,
+      "mosaic": 0.7,
+      "mixup": 0.05,
+      "copy_paste": 0.0,
+      "close_mosaic": 10
+    },
+    "stop_rotation_angles": [
+      -24,
+      -18,
+      -12,
+      12,
+      18,
+      24
+    ],
+    "map50_95_per_class": {
+      "left-arrow": 0.8723973636013109,
+      "right-arrow": 0.8677104670767829,
+      "stop-signal": 0.861887383358806,
+      "meta": 0.8834781957067046
+    }
+  },
+  "qualitative_sample_count": 16,
+  "composite_eval_sample_count": 12
+}

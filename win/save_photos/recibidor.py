@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROBOT_IP = "192.168.0.108"
+ROBOT_IP = "10.60.199.200"
 ROBOT_PORT = 6000
 
 DESIRED_DOMAIN_ID = 2
@@ -24,7 +24,7 @@ SAVE_INTERVAL_SECONDS = 1.0
 SCAN_PRINT_INTERVAL_SECONDS = 2.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "output" / "yolo-dataset-v5"
+DATASET_DIR = REPO_ROOT / "output" / "yolo-dataset-v6"
 
 _last_save_time = 0.0
 _last_scan_print = 0.0

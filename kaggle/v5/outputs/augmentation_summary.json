@@ -1,0 +1,35 @@
+{
+  "stop_rotations": {
+    "angles": [
+      -24,
+      -18,
+      -12,
+      12,
+      18,
+      24
+    ],
+    "source_images": 214,
+    "created_images": 1284,
+    "skipped_mixed_labels": 0,
+    "skipped_unreadable": 0
+  },
+  "training_composites": {
+    "requested": 36,
+    "created": 36,
+    "classes_used": [
+      "left-arrow",
+      "right-arrow",
+      "stop-signal"
+    ]
+  },
+  "composite_eval": {
+    "requested": 12,
+    "created": 12,
+    "classes_used": [
+      "left-arrow",
+      "right-arrow",
+      "stop-signal"
+    ]
+  },
+  "note": "Ultralytics degrees is 0.0; stop-signal rotation augmentation is materialized offline only for pure stop-signal train images."
+}

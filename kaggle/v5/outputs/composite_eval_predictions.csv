@@ -1,0 +1,13 @@
+image,gt_classes,pred_classes,gt_count,pred_count,all_gt_classes_detected,qualitative_image
+composite_eval_0000.jpg,right-arrow|stop-signal,right-arrow|stop-signal,2,2,True,composite_eval_0000_pred.jpg
+composite_eval_0001.jpg,stop-signal|right-arrow,stop-signal|right-arrow,2,2,True,composite_eval_0001_pred.jpg
+composite_eval_0002.jpg,left-arrow|stop-signal|right-arrow,left-arrow|right-arrow|stop-signal,3,3,True,composite_eval_0002_pred.jpg
+composite_eval_0003.jpg,stop-signal|right-arrow,stop-signal|right-arrow,2,2,True,composite_eval_0003_pred.jpg
+composite_eval_0004.jpg,left-arrow|right-arrow,right-arrow|left-arrow,2,2,True,composite_eval_0004_pred.jpg
+composite_eval_0005.jpg,right-arrow|stop-signal|left-arrow,right-arrow|stop-signal|left-arrow|left-arrow,3,4,True,composite_eval_0005_pred.jpg
+composite_eval_0006.jpg,right-arrow|stop-signal,stop-signal|right-arrow,2,2,True,composite_eval_0006_pred.jpg
+composite_eval_0007.jpg,left-arrow|stop-signal,left-arrow|stop-signal,2,2,True,composite_eval_0007_pred.jpg
+composite_eval_0008.jpg,left-arrow|stop-signal|right-arrow,right-arrow|left-arrow|stop-signal,3,3,True,composite_eval_0008_pred.jpg
+composite_eval_0009.jpg,stop-signal|left-arrow|right-arrow,left-arrow|right-arrow|stop-signal,3,3,True,composite_eval_0009_pred.jpg
+composite_eval_0010.jpg,stop-signal|left-arrow,left-arrow|stop-signal,2,2,True,composite_eval_0010_pred.jpg
+composite_eval_0011.jpg,left-arrow|right-arrow,right-arrow|left-arrow,2,2,True,composite_eval_0011_pred.jpg
