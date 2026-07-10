@@ -83,6 +83,11 @@ Each record includes a `supervision` block with fields like:
     "qr_event": "NONE",
     "qr_event_status": "idle",
     "qr_rejection_reason": "missing",
+    "qr_event_id": null,
+    "qr_event_schema": null,
+    "qr_source_frame_age_s": null,
+    "qr_decode_variant": null,
+    "qr_decode_latency_ms": null,
     "active_maneuver": true,
     "maneuver_phase": "TURNING_LEFT",
     "suggested_linear_x": 0.0913,
@@ -103,8 +108,10 @@ Interpretation:
 ```text
 raw_yolo_*        what the detector/injector wrote
 yolo_*            freshness, debounce, validation, and arbiter acceptance
-raw_qr_*          QR payload before duplicate/confirmation handling
-qr_*              QR confirmation/logging/duplicate status
+raw_qr_*          QR payload before duplicate/checkpoint handling
+qr_*              QR validation/logging/duplicate status
+qr_event_id       laptop semantic event ID for correlation
+qr_decode_*       laptop decoder variant and latency when available
 arbiter_*         intended command after arbiter priority and safety decisions
 published_*       what actually went to /cmd_vel after dry-run/motion gates
 ```
@@ -151,11 +158,12 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p publish_zero_in_dry_run:=true \
   -p sign_confirm_window:=2 \
   -p sign_confirm_count:=2 \
-  -p enable_qr_detection:=true \
-  -p qr_check_every_n_frames:=1 \
-  -p qr_confirm_count:=1 \
+  -p enable_qr_events:=true \
+  -p enable_external_qr_events:=true \
+  -p enable_qr_detection:=false \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
-  -p qr_injection_path:=/home/ubuntu/output/qr_injection.json \
+  -p qr_injection_path:=/home/ubuntu/output/signals/latest_qr_event.json \
+  -p max_external_qr_source_frame_age_s:=0.5 \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
   -p collision_log_path:="$RUN_DIR/collision_events.jsonl" \
@@ -265,7 +273,8 @@ published command remains zero
 
 ```bash
 python3 scripts/inject_perception_event.py qr CHECKPOINT_TEST_1 \
-  --qr-path /home/ubuntu/output/qr_injection.json
+  --semantic-qr \
+  --qr-path /home/ubuntu/output/signals/latest_qr_event.json
 ```
 
 Expected:
@@ -284,7 +293,8 @@ Duplicate check:
 
 ```bash
 python3 scripts/inject_perception_event.py qr CHECKPOINT_TEST_1 \
-  --qr-path /home/ubuntu/output/qr_injection.json
+  --semantic-qr \
+  --qr-path /home/ubuntu/output/signals/latest_qr_event.json
 ```
 
 Expected:
@@ -331,7 +341,7 @@ Cleanup:
 ```bash
 python3 scripts/inject_perception_event.py cleanup \
   --signal-path /home/ubuntu/output/signals/latest_signal.json \
-  --qr-path /home/ubuntu/output/qr_injection.json
+  --qr-path /home/ubuntu/output/signals/latest_qr_event.json
 ```
 
 ## Phase 1 summary
@@ -393,13 +403,19 @@ python3 -B reactive_nav/debug_image_udp_sender.py --ros-args \
   -p jpeg_quality:=80
 ```
 
-## Laptop terminal B — run YOLO receiver
+## Laptop terminal B — run YOLO receiver with laptop ZXing QR
 
 From the Mac/local repo:
 
 ```bash
 cd /Users/katharsis/Developer/cv/turtle4
-python3 win/yolo/recibidor.py
+RUN_ID="$(date +%Y%m%d_%H%M%S)_perception_only"
+mkdir -p "output/perception_runs/$RUN_ID"
+
+uv run python win/yolo/recibidor.py \
+  --enable-qr \
+  --qr-event-path output/signals/latest_qr_event.json \
+  --perception-log "output/perception_runs/$RUN_ID/laptop_perception.jsonl"
 ```
 
 Show LEFT, RIGHT, and STOP signs to the camera one at a time.
@@ -423,15 +439,20 @@ actionable
 stable frame count
 ```
 
-## Laptop terminal C — sync YOLO latest state to robot
+## Laptop terminal C — sync YOLO and QR latest state to robot
 
 ```bash
 cd /Users/katharsis/Developer/cv/turtle4
-python3 win/reactive_nav/enviador_yolo.py \
+RUN_ID="$(ls -td output/perception_runs/*_perception_only | head -n 1 | xargs basename)"
+
+uv run python win/reactive_nav/enviador_yolo.py \
   --robot turtlebot4 \
   --source output/signals/latest_signal.json \
   --remote-path /home/ubuntu/output/signals/latest_signal.json \
-  --interval 0.2
+  --qr-source output/signals/latest_qr_event.json \
+  --qr-remote-path /home/ubuntu/output/signals/latest_qr_event.json \
+  --interval 0.2 \
+  --log-path "output/perception_runs/$RUN_ID/sync.jsonl"
 ```
 
 ## Robot terminal D — stationary navigator/perception logger
@@ -459,11 +480,12 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
-  -p enable_qr_detection:=true \
-  -p qr_check_every_n_frames:=1 \
-  -p qr_confirm_count:=1 \
+  -p enable_qr_events:=true \
+  -p enable_external_qr_events:=true \
+  -p enable_qr_detection:=false \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
-  -p qr_injection_path:=/home/ubuntu/output/qr_injection.json \
+  -p qr_injection_path:=/home/ubuntu/output/signals/latest_qr_event.json \
+  -p max_external_qr_source_frame_age_s:=0.5 \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
   -p collision_log_path:="$RUN_DIR/collision_events.jsonl" \
@@ -489,39 +511,15 @@ Phase 2 pass criteria:
 ```text
 LEFT/RIGHT/STOP signs produce raw_yolo_class and confidence in supervision logs
 accepted signs show yolo_event_status=accepted or candidates show explicit rejection/progress
-QR codes produce raw_qr_payload and either accepted or duplicate status
-not-detected QR shows qr_decode_status=not_detected rather than silent failure
+QR codes produce qr_event_id, raw_qr_payload, and either accepted or duplicate status
+not-detected QR shows no laptop validated event rather than a stale robot decode
 published command remains zero
 ```
 
-If the laptop YOLO view is working but QR does not appear in supervision, run a
-camera-only QR probe on the robot:
-
-```bash
-set +u
-source /opt/ros/jazzy/setup.bash
-set -u
-export ROS_DOMAIN_ID=2
-
-cd /home/ubuntu/reactive_nav_test
-python3 scripts/probe_qr_camera.py \
-  --frames 80 \
-  --save-frame /home/ubuntu/output/qr_probe_frame.jpg
-```
-
-Interpretation:
-
-```text
-status=decoded:
-  QR camera decoding works. If the navigator still misses it, inspect
-  reactive_nav_debug.jsonl supervision.qr_* fields.
-
-status=detected_not_decoded:
-  The QR shape is visible but too small/blurred/low contrast in that frame.
-
-status=not_detected:
-  The QR is not visible enough in the OAK-D preview image.
-```
+If the laptop YOLO view is working but QR does not appear in supervision,
+inspect `output/perception_runs/<run_id>/laptop_perception.jsonl` for
+`qr_decode_status`, `qr_rejection_reason`, and queue freshness metrics. Inspect
+`output/perception_runs/<run_id>/sync.jsonl` for remote transfer failures.
 
 ---
 
@@ -535,8 +533,8 @@ real perception -> event -> arbiter -> FSM transition -> intended command
 
 This is the full integration path with physical output blocked.
 
-Use the same camera, YOLO receiver, and YOLO sync terminals from Phase 2. Start a
-fresh navigator run:
+Use the same camera, YOLO+QR receiver, and dual sync terminals from Phase 2.
+Start a fresh navigator run:
 
 ```bash
 ssh turtlebot4
@@ -561,10 +559,12 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
-  -p enable_qr_detection:=true \
-  -p qr_check_every_n_frames:=1 \
-  -p qr_confirm_count:=1 \
+  -p enable_qr_events:=true \
+  -p enable_external_qr_events:=true \
+  -p enable_qr_detection:=false \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
+  -p qr_injection_path:=/home/ubuntu/output/signals/latest_qr_event.json \
+  -p max_external_qr_source_frame_age_s:=0.5 \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
   -p collision_log_path:="$RUN_DIR/collision_events.jsonl" \
@@ -603,6 +603,7 @@ STOP:
   published command remains zero
 
 QR:
+  qr_event_id is visible
   raw_qr_payload is the expected content
   qr_event_status=accepted for first sighting or duplicate for repeat
   current_state=QR_SCAN when recently logged
@@ -625,7 +626,7 @@ turn state and arbiter command exist but published command non-zero:
   Dry-run/motion gate failure. Stop immediately.
 
 raw_qr_payload missing:
-  QR decoder did not see/decode the code.
+  Laptop QR did not produce a validated event or sync did not install it.
 
 qr_event_status=duplicate:
   QR worked, but content was already logged.
@@ -645,7 +646,7 @@ Summarize locally:
 
 ```bash
 RUN_DIR="$(ls -td output/fsm_perception_runs/* | head -n 1)"
-.venv/bin/python scripts/summarize_perception_fsm_run.py "$RUN_DIR"
+uv run python scripts/summarize_perception_fsm_run.py "$RUN_DIR"
 ```
 
 ## Stop and cleanup
@@ -662,7 +663,7 @@ Remove injected event state:
 cd /home/ubuntu/reactive_nav_test
 python3 scripts/inject_perception_event.py cleanup \
   --signal-path /home/ubuntu/output/signals/latest_signal.json \
-  --qr-path /home/ubuntu/output/qr_injection.json
+  --qr-path /home/ubuntu/output/signals/latest_qr_event.json
 ```
 
 Optional zero command, still safe:

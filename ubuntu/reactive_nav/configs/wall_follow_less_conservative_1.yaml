@@ -54,6 +54,10 @@
     sign_min_area_ratio: 0.02
     sign_cooldown_s: 3.0
 
-    enable_qr_detection: true
+    enable_qr_events: true
+    enable_external_qr_events: true
+    enable_qr_detection: false
+    qr_injection_path: /home/ubuntu/output/signals/latest_qr_event.json
+    max_external_qr_source_frame_age_s: 0.5
     qr_check_every_n_frames: 1
     qr_confirm_count: 1

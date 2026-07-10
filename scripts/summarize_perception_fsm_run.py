@@ -46,6 +46,8 @@ def summarize(path: Path) -> Dict[str, Any]:
     yolo_status = Counter()
     qr_events = Counter()
     qr_status = Counter()
+    qr_event_ids = Counter()
+    qr_variants = Counter()
     command_sources = Counter()
     unsafe_published = 0
     blocked_cycles = 0
@@ -58,6 +60,10 @@ def summarize(path: Path) -> Dict[str, Any]:
         yolo_status[str(sup.get("yolo_event_status") or "unknown")] += 1
         qr_events[str(sup.get("qr_event") or "NONE")] += 1
         qr_status[str(sup.get("qr_event_status") or "unknown")] += 1
+        if sup.get("qr_event_id"):
+            qr_event_ids[str(sup.get("qr_event_id"))] += 1
+        if sup.get("qr_decode_variant"):
+            qr_variants[str(sup.get("qr_decode_variant"))] += 1
         command_sources[str(sup.get("command_source") or "unknown")] += 1
         published_linear = float(sup.get("published_linear_x") or 0.0)
         published_yaw = float(sup.get("published_angular_z") or 0.0)
@@ -79,6 +85,9 @@ def summarize(path: Path) -> Dict[str, Any]:
         "yolo_event_status": dict(yolo_status.most_common()),
         "qr_events": dict(qr_events.most_common()),
         "qr_event_status": dict(qr_status.most_common()),
+        "qr_event_ids": dict(qr_event_ids.most_common()),
+        "qr_decode_variants": dict(qr_variants.most_common()),
+        "unique_qr_event_id_count": len(qr_event_ids),
         "command_sources": dict(command_sources.most_common()),
         "intended_command_blocked_cycles": blocked_cycles,
         "unsafe_nonzero_published_while_blocked": unsafe_published,
@@ -95,6 +104,8 @@ def print_text(summary: Dict[str, Any]) -> None:
     print(f"YOLO status: {summary['yolo_event_status']}")
     print(f"QR events: {summary['qr_events']}")
     print(f"QR status: {summary['qr_event_status']}")
+    print(f"QR event IDs: {summary['qr_event_ids']}")
+    print(f"QR decode variants: {summary['qr_decode_variants']}")
     print(f"Command sources: {summary['command_sources']}")
     print(f"Intended command blocked cycles: {summary['intended_command_blocked_cycles']}")
     print(f"Unsafe non-zero published while blocked: {summary['unsafe_nonzero_published_while_blocked']}")

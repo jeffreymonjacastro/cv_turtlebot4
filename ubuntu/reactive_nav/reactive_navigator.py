@@ -123,6 +123,7 @@ def read_injected_qr_event(
     path: str | Path,
     *,
     max_age_s: float,
+    max_source_frame_age_s: float = 0.5,
 ) -> Dict[str, Any]:
     path = Path(path)
     if not path.exists():
@@ -150,14 +151,49 @@ def read_injected_qr_event(
             "source": "injection_file",
         }
 
-    timestamp = float(payload.get("timestamp") or 0.0)
+    if not isinstance(payload, dict):
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "read_error",
+            "qr_event": "NONE",
+            "qr_event_status": "rejected",
+            "qr_rejection_reason": "payload_not_object",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+    raw_source_frame_age = payload.get("source_frame_age_s")
+    try:
+        timestamp = float(payload.get("timestamp") or 0.0)
+        source_frame_age_s = float(raw_source_frame_age) if raw_source_frame_age is not None else math.inf
+    except (TypeError, ValueError):
+        timestamp = 0.0
+        source_frame_age_s = math.inf
     age = time.time() - timestamp if timestamp > 0.0 else math.inf
-    content = payload.get("qr_content") or payload.get("payload") or payload.get("content")
-    content = str(content).strip() if content is not None else ""
+    raw_content = payload.get("qr_content") or payload.get("payload") or payload.get("content")
+    content = QRLogger.normalize_content(raw_content) or ""
+    schema_version = str(payload.get("schema_version") or "legacy_qr_event")
+    is_semantic_event = schema_version != "legacy_qr_event"
     stale = age > max_age_s
-    if not content:
+    validation_status = str(payload.get("validation_status") or "")
+    if raw_content is not None and not content:
+        status = "rejected"
+        reason = "invalid_payload"
+    elif not content:
         status = "idle" if not payload else "rejected"
         reason = "empty_payload"
+    elif is_semantic_event and schema_version != "qr_semantic_event_v1":
+        status = "rejected"
+        reason = f"unsupported_schema:{schema_version}"
+    elif is_semantic_event and validation_status != "validated":
+        status = "rejected"
+        reason = "event_not_validated"
+    elif is_semantic_event and raw_source_frame_age is None:
+        status = "rejected"
+        reason = "missing_source_frame_age"
+    elif is_semantic_event and source_frame_age_s > max_source_frame_age_s:
+        status = "rejected"
+        reason = f"stale_source_frame:{source_frame_age_s:.2f}s"
     elif stale:
         status = "rejected"
         reason = f"stale:{age:.2f}s"
@@ -170,11 +206,24 @@ def read_injected_qr_event(
         "qr_event": content or "NONE",
         "qr_event_status": status,
         "qr_rejection_reason": reason if status == "rejected" else "none",
-        "fresh": bool(content and not stale),
+        "fresh": status == "candidate",
         "age_s": age if math.isfinite(age) else None,
         "event_id": str(payload.get("event_id") or f"qr:{content}:{timestamp:.6f}"),
         "source": str(payload.get("source") or "injection_file"),
         "confidence": payload.get("confidence"),
+        "schema_version": schema_version,
+        "is_semantic_event": is_semantic_event,
+        "validation_status": validation_status,
+        "source_frame_time": payload.get("source_frame_time"),
+        "source_received_at": payload.get("source_received_at"),
+        "source_frame_age_s": source_frame_age_s if math.isfinite(source_frame_age_s) else None,
+        "raw_qr_content": payload.get("raw_qr_content"),
+        "barcode_format": payload.get("barcode_format"),
+        "decode_variant": payload.get("decode_variant"),
+        "decode_latency_ms": payload.get("decode_latency_ms"),
+        "corners": payload.get("corners") or [],
+        "confirmation_count": payload.get("confirmation_count"),
+        "confirmation_window_s": payload.get("confirmation_window_s"),
     }
 
 
@@ -300,7 +349,9 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("sign_center_x_max", 0.80)
             self.declare_parameter("sign_cooldown_s", 3.0)
 
+            self.declare_parameter("enable_qr_events", True)
             self.declare_parameter("enable_qr_detection", True)
+            self.declare_parameter("enable_external_qr_events", False)
             self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
             self.declare_parameter("max_image_age_s", 1.5)
             self.declare_parameter("qr_check_every_n_frames", 5)
@@ -308,6 +359,7 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("qr_confirm_count", 2)
             self.declare_parameter("qr_injection_path", "output/qr_injection.json")
             self.declare_parameter("max_qr_injection_age_s", 2.0)
+            self.declare_parameter("max_external_qr_source_frame_age_s", 0.5)
 
             self.declare_parameter("telemetry_enabled", True)
             self.declare_parameter("telemetry_port", 6612)
@@ -353,6 +405,7 @@ def run_ros_node(args=None) -> None:
             self.qr_frame_counter = 0
             self.last_qr_time = 0.0
             self.last_qr_duplicate_log_time = 0.0
+            self.consumed_external_qr_event_ids: set[str] = set()
             self.last_qr_supervision: Dict[str, Any] = {
                 "raw_qr_payload": None,
                 "qr_decode_status": "not_checked",
@@ -508,8 +561,11 @@ def run_ros_node(args=None) -> None:
             return float(self.get_parameter(name).value)
 
         def _init_qr_subscription(self, ImageMsg, qos_profile) -> None:
-            if not self._param_bool("enable_qr_detection"):
-                self.diag.log("INFO", "[QR] local QR detection disabled by parameter")
+            qr_events_enabled = self._param_bool("enable_qr_events")
+            local_qr_enabled = qr_events_enabled and self._param_bool("enable_qr_detection")
+            camera_cache_needed = self._param_bool("collision_logging_enabled")
+            if not local_qr_enabled and not camera_cache_needed:
+                self.diag.log("INFO", "[CAMERA] subscription disabled; local QR and collision cache are off")
                 return
             try:
                 import cv2
@@ -520,7 +576,7 @@ def run_ros_node(args=None) -> None:
 
             image_topic = self._param_str("image_topic")
             self.bridge = CvBridge()
-            self.qr_detector = cv2.QRCodeDetector()
+            self.qr_detector = cv2.QRCodeDetector() if local_qr_enabled else None
             self.image_sub = self.create_subscription(
                 ImageMsg,
                 image_topic,
@@ -530,7 +586,8 @@ def run_ros_node(args=None) -> None:
             pub_count = len(self.get_publishers_info_by_topic(image_topic))
             self.diag.log(
                 "INFO",
-                f"[QR] subscribed image_topic={image_topic} publishers={pub_count}",
+                f"[CAMERA] subscribed image_topic={image_topic} publishers={pub_count} "
+                f"local_qr_decode={local_qr_enabled} collision_cache={camera_cache_needed}",
             )
 
         def _init_collision_subscription(self, qos_profile) -> None:
@@ -803,10 +860,35 @@ def run_ros_node(args=None) -> None:
             )
 
         def _process_injected_qr(self) -> None:
+            if not self._param_bool("enable_qr_events"):
+                self.last_qr_supervision = {
+                    "raw_qr_payload": None,
+                    "qr_decode_status": "disabled",
+                    "qr_confirmation_progress": "0/0",
+                    "qr_event": "NONE",
+                    "qr_event_status": "disabled",
+                    "qr_rejection_reason": "qr_events_disabled",
+                    "qr_source": "external_event_file",
+                }
+                return
+            if not self._param_bool("enable_external_qr_events"):
+                return
             payload = read_injected_qr_event(
                 self._param_str("qr_injection_path"),
                 max_age_s=self._param_float("max_qr_injection_age_s"),
+                max_source_frame_age_s=self._param_float("max_external_qr_source_frame_age_s"),
             )
+            metadata = {
+                "qr_event_id": payload.get("event_id"),
+                "qr_event_schema": payload.get("schema_version"),
+                "qr_validation_status": payload.get("validation_status"),
+                "qr_source_frame_time": payload.get("source_frame_time"),
+                "qr_source_frame_age_s": payload.get("source_frame_age_s"),
+                "qr_decode_variant": payload.get("decode_variant"),
+                "qr_decode_latency_ms": payload.get("decode_latency_ms"),
+                "qr_barcode_format": payload.get("barcode_format"),
+                "qr_corners": payload.get("corners") or [],
+            }
             if not payload.get("fresh"):
                 if payload.get("qr_decode_status") not in ("missing", "empty"):
                     self.last_qr_supervision = {
@@ -818,19 +900,53 @@ def run_ros_node(args=None) -> None:
                         "qr_rejection_reason": payload.get("qr_rejection_reason", "not_fresh"),
                         "qr_source": payload.get("source", "injection_file"),
                         "raw_qr_age_s": payload.get("age_s"),
+                        **metadata,
                     }
                 return
 
             content = str(payload.get("raw_qr_payload") or "")
-            event = self.qr_logger.observe(
-                content,
-                source=str(payload.get("source") or "injection_file"),
-                frame_id=str(payload.get("event_id") or ""),
-                robot_state=self.last_state,
-                confidence=payload.get("confidence"),
-                context=self._distance_context(),
-            )
-            progress = self.qr_logger.confirmation_progress(content)
+            event_id = str(payload.get("event_id") or "")
+            if payload.get("is_semantic_event"):
+                if event_id in self.consumed_external_qr_event_ids:
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": content,
+                        "qr_decode_status": "decoded",
+                        "qr_confirmation_progress": "validated_laptop",
+                        "qr_event": content,
+                        "qr_event_status": "duplicate_event",
+                        "qr_rejection_reason": "event_id_already_consumed",
+                        "qr_source": payload.get("source", "laptop_zxing"),
+                        "raw_qr_age_s": payload.get("age_s"),
+                        **metadata,
+                    }
+                    return
+                event = self.qr_logger.record_validated(
+                    content,
+                    source=str(payload.get("source") or "laptop_zxing"),
+                    event_id=event_id,
+                    raw_content=payload.get("raw_qr_content"),
+                    source_frame_time=payload.get("source_frame_time"),
+                    robot_state=self.last_state,
+                    barcode_format=payload.get("barcode_format"),
+                    decode_variant=payload.get("decode_variant"),
+                    decode_latency_ms=payload.get("decode_latency_ms"),
+                    corners=payload.get("corners"),
+                    context=self._distance_context(),
+                )
+                self.consumed_external_qr_event_ids.add(event_id)
+                if len(self.consumed_external_qr_event_ids) > 128:
+                    self.consumed_external_qr_event_ids = set(list(self.consumed_external_qr_event_ids)[-64:])
+                progress = "validated_laptop"
+            else:
+                event = self.qr_logger.observe(
+                    content,
+                    source=str(payload.get("source") or "injection_file"),
+                    frame_id=event_id,
+                    robot_state=self.last_state,
+                    confidence=payload.get("confidence"),
+                    context=self._distance_context(),
+                )
+                progress = self.qr_logger.confirmation_progress(content)
             if event is None:
                 self.last_qr_supervision = {
                     "raw_qr_payload": content,
@@ -841,6 +957,7 @@ def run_ros_node(args=None) -> None:
                     "qr_rejection_reason": "awaiting_confirmation",
                     "qr_source": payload.get("source", "injection_file"),
                     "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
                 }
                 return
             if event.logged:
@@ -854,7 +971,9 @@ def run_ros_node(args=None) -> None:
                     "qr_rejection_reason": "none",
                     "qr_source": payload.get("source", "injection_file"),
                     "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
                 }
+                self.diag.log("INFO", f"[QR] external event accepted id={event_id} content={content!r}")
             elif event.duplicate:
                 self.last_qr_supervision = {
                     "raw_qr_payload": content,
@@ -865,6 +984,19 @@ def run_ros_node(args=None) -> None:
                     "qr_rejection_reason": event.reason,
                     "qr_source": payload.get("source", "injection_file"),
                     "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
+                }
+            else:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "rejected",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
                 }
 
         def control_loop(self) -> None:

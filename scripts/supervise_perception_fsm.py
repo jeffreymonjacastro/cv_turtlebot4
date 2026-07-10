@@ -45,6 +45,9 @@ def render(record: Dict[str, Any]) -> str:
         f"QR raw={sup.get('raw_qr_payload')} decode={sup.get('qr_decode_status')} "
         f"progress={sup.get('qr_confirmation_progress')} event={sup.get('qr_event')} "
         f"status={sup.get('qr_event_status')} reject={sup.get('qr_rejection_reason')}",
+        f"QR id={sup.get('qr_event_id')} schema={sup.get('qr_event_schema')} "
+        f"src_age={sup.get('qr_source_frame_age_s')} variant={sup.get('qr_decode_variant')} "
+        f"latency_ms={sup.get('qr_decode_latency_ms')}",
         f"maneuver active={sup.get('active_maneuver')} phase={sup.get('maneuver_phase')} "
         f"elapsed={sup.get('maneuver_elapsed_s')}",
         f"cmd source={sup.get('command_source')} suggested=({sup.get('suggested_linear_x')}, {sup.get('suggested_angular_z')}) "

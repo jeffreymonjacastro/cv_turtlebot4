@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - direct script fallback
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SIGNAL_PATH = REPO_ROOT / "output" / "signals" / "latest_signal.json"
 DEFAULT_QR_PATH = REPO_ROOT / "output" / "qr_injection.json"
+DEFAULT_SEMANTIC_QR_PATH = REPO_ROOT / "output" / "signals" / "latest_qr_event.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +51,22 @@ def parse_args() -> argparse.Namespace:
         "--source-frame-time",
         default=None,
         help="Optional source_frame_time/event identifier for YOLO.",
+    )
+    parser.add_argument(
+        "--semantic-qr",
+        action="store_true",
+        help="Write the validated qr_semantic_event_v1 envelope instead of the legacy flat QR file.",
+    )
+    parser.add_argument(
+        "--unvalidated-qr",
+        action="store_true",
+        help="With --semantic-qr, mark the event unvalidated for rejection testing.",
+    )
+    parser.add_argument(
+        "--source-frame-age-sec",
+        type=float,
+        default=0.0,
+        help="With --semantic-qr, set source_frame_age_s for freshness rejection tests.",
     )
     return parser.parse_args()
 
@@ -94,6 +111,32 @@ def inject_qr(args: argparse.Namespace) -> Path:
         raise SystemExit("missing QR payload")
     now = time.time()
     timestamp = now - max(0.0, args.age_sec) if args.stale else now
+    if args.semantic_qr:
+        target = Path(args.qr_path)
+        if target == DEFAULT_QR_PATH:
+            target = DEFAULT_SEMANTIC_QR_PATH
+        source_frame_time = args.source_frame_time or f"synthetic:{int(now * 1000)}"
+        payload = {
+            "schema_version": "qr_semantic_event_v1",
+            "event_type": "qr_checkpoint",
+            "event_id": f"synthetic_qr:{args.value}:{timestamp:.6f}",
+            "timestamp": timestamp,
+            "source_frame_time": source_frame_time,
+            "source_received_at": now - max(0.0, args.source_frame_age_sec),
+            "source_frame_age_s": max(0.0, args.source_frame_age_sec),
+            "qr_content": args.value,
+            "raw_qr_content": args.value,
+            "barcode_format": "QRCode",
+            "decode_variant": "synthetic",
+            "corners": [],
+            "decode_latency_ms": 0.0,
+            "validation_status": "candidate" if args.unvalidated_qr else "validated",
+            "confirmation_count": 2,
+            "confirmation_window_s": 1.2,
+            "source": "synthetic_injector",
+            "injected": True,
+        }
+        return atomic_write_json(target, payload)
     payload = {
         "qr_content": args.value,
         "timestamp": timestamp,
@@ -111,6 +154,8 @@ def cleanup(args: argparse.Namespace) -> None:
         removed.append(args.signal_path)
     if remove_if_exists(args.qr_path):
         removed.append(args.qr_path)
+    if Path(args.qr_path) == DEFAULT_QR_PATH and remove_if_exists(DEFAULT_SEMANTIC_QR_PATH):
+        removed.append(DEFAULT_SEMANTIC_QR_PATH)
     if removed:
         for path in removed:
             print(f"removed {path}")
