@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.0",
     "opencv-python>=4.10",
+    "pyzbar>=0.1.9",
     "ultralytics>=8.4.60",
 ]
 
