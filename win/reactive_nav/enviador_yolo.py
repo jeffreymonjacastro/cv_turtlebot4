@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
-"""Copy YOLO latest-signal state from the laptop to the TurtleBot.
-
-Run this on the laptop/local repo next to ``win/yolo/recibidor.py``. The YOLO
-receiver writes ``output/signals/latest_signal.json`` locally; this helper keeps
-the TurtleBot copy fresh so ``reactive_navigator.py`` can react to signs.
-"""
+"""Send YOLO latest-signal state from the laptop to the TurtleBot over UDP."""
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from pathlib import Path
-import subprocess
+import socket
 import sys
 import time
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = REPO_ROOT / "output" / "signals" / "latest_signal.json"
-DEFAULT_ROBOT = "ubuntu@10.60.199.200"
-DEFAULT_REMOTE_PATH = "/home/ubuntu/output/signals/latest_signal.json"
+DEFAULT_ROBOT_IP = os.environ.get("ROBOT_IP", "10.60.199.200")
+DEFAULT_PORT = int(os.environ.get("YOLO_SIGNAL_PORT", "6611"))
+MAX_PACKET_BYTES = 60_000
 
 
-def run_command(command: list[str], *, quiet: bool = False) -> bool:
-    result = subprocess.run(
-        command,
-        stdout=subprocess.DEVNULL if quiet else None,
-        stderr=subprocess.DEVNULL if quiet else None,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def ensure_remote_dir(robot: str, remote_path: str) -> bool:
-    remote_dir = str(Path(remote_path).parent)
-    return run_command(["ssh", robot, "mkdir", "-p", remote_dir])
-
-
-def copy_signal(source: Path, robot: str, remote_path: str, *, quiet: bool) -> bool:
-    return run_command(["scp", "-q", str(source), f"{robot}:{remote_path}"], quiet=quiet)
+def build_signal_packet(source: Path) -> tuple[bytes, dict]:
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("latest_signal.json must contain a JSON object")
+    packet = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    if len(packet) > MAX_PACKET_BYTES:
+        raise ValueError(f"latest_signal.json is too large for one UDP packet: {len(packet)} bytes")
+    return packet, payload
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,14 +37,15 @@ def parse_args() -> argparse.Namespace:
         help="Local latest_signal.json written by win/yolo/recibidor.py.",
     )
     parser.add_argument(
-        "--robot",
-        default=DEFAULT_ROBOT,
-        help="SSH target for the TurtleBot.",
+        "--robot-ip",
+        default=DEFAULT_ROBOT_IP,
+        help="TurtleBot IP address.",
     )
     parser.add_argument(
-        "--remote-path",
-        default=DEFAULT_REMOTE_PATH,
-        help="Destination path read by reactive_navigator.py.",
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="UDP port listened to by ubuntu/reactive_nav/signal_udp_receiver.py.",
     )
     parser.add_argument(
         "--interval",
@@ -64,14 +54,14 @@ def parse_args() -> argparse.Namespace:
         help="Polling interval in seconds.",
     )
     parser.add_argument(
-        "--copy-every-interval",
+        "--send-every-interval",
         action="store_true",
-        help="Copy every interval instead of only when the source mtime changes.",
+        help="Send every interval instead of only when the source mtime changes.",
     )
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress successful copy messages.",
+        help="Suppress successful send messages.",
     )
     return parser.parse_args()
 
@@ -80,39 +70,47 @@ def main() -> int:
     args = parse_args()
     source = Path(args.source).expanduser().resolve()
     interval = max(0.05, float(args.interval))
+    target = (args.robot_ip, int(args.port))
 
-    print(f"[YOLO-SYNC] source={source}")
-    print(f"[YOLO-SYNC] destination={args.robot}:{args.remote_path}")
-    print(f"[YOLO-SYNC] interval={interval:.2f}s")
+    print(f"[YOLO-UDP] source={source}")
+    print(f"[YOLO-UDP] destination={target[0]}:{target[1]}")
+    print(f"[YOLO-UDP] interval={interval:.2f}s")
 
-    if not ensure_remote_dir(args.robot, args.remote_path):
-        print("[YOLO-SYNC] ERROR: could not create remote signal directory", file=sys.stderr)
-        return 2
-
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     last_mtime_ns = None
     last_missing_log = 0.0
-    while True:
-        try:
-            stat = source.stat()
-        except FileNotFoundError:
-            now = time.monotonic()
-            if now - last_missing_log >= 2.0:
-                print(f"[YOLO-SYNC] waiting for {source}")
-                last_missing_log = now
+    try:
+        while True:
+            try:
+                stat = source.stat()
+            except FileNotFoundError:
+                now = time.monotonic()
+                if now - last_missing_log >= 2.0:
+                    print(f"[YOLO-UDP] waiting for {source}")
+                    last_missing_log = now
+                time.sleep(interval)
+                continue
+
+            changed = stat.st_mtime_ns != last_mtime_ns
+            if changed or args.send_every_interval:
+                try:
+                    packet, payload = build_signal_packet(source)
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    print(f"[YOLO-UDP] WARN: could not read signal: {exc}", file=sys.stderr)
+                else:
+                    sock.sendto(packet, target)
+                    last_mtime_ns = stat.st_mtime_ns
+                    if not args.quiet:
+                        age = time.time() - stat.st_mtime
+                        direction = payload.get("direction", "unknown")
+                        print(
+                            f"[YOLO-UDP] sent latest_signal.json "
+                            f"direction={direction} age={age:.2f}s bytes={len(packet)}"
+                        )
+
             time.sleep(interval)
-            continue
-
-        changed = stat.st_mtime_ns != last_mtime_ns
-        if changed or args.copy_every_interval:
-            if copy_signal(source, args.robot, args.remote_path, quiet=args.quiet):
-                last_mtime_ns = stat.st_mtime_ns
-                if not args.quiet:
-                    age = time.time() - stat.st_mtime
-                    print(f"[YOLO-SYNC] copied latest_signal.json age={age:.2f}s")
-            else:
-                print("[YOLO-SYNC] WARN: scp failed; retrying", file=sys.stderr)
-
-        time.sleep(interval)
+    finally:
+        sock.close()
 
 
 if __name__ == "__main__":

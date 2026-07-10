@@ -126,6 +126,16 @@ While that is running, confirm on the Mac:
 1. `win/yolo/recibidor.py` shows live camera frames.
 2. `win/lidar/recibidor.py` shows state, reason, and command updates.
 3. `output/signals/latest_signal.json` is updating when signs are visible.
+4. `python3 win/reactive_nav/enviador_yolo.py --robot-ip 10.60.199.200 --port 6611` sends the signal file over UDP.
+
+On the robot, keep the UDP signal receiver running so the navigator can read
+the laptop YOLO state without SCP:
+
+```bash
+python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/signal_udp_receiver.py \
+  --port 6611 \
+  --output /home/ubuntu/output/signals/latest_signal.json
+```
 
 ## 5. Movement run with a named profile
 

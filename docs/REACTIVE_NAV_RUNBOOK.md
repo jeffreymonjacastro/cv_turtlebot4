@@ -93,6 +93,21 @@ win/yolo/recibidor.py
 
 because it receives images, runs YOLO, and writes `output/signals/latest_signal.json`.
 
+To forward that signal file to the robot without SSH/SCP passwords, run this
+receiver on the robot:
+
+```bash
+python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/signal_udp_receiver.py \
+  --port 6611 \
+  --output /home/ubuntu/output/signals/latest_signal.json
+```
+
+Then run this sender on the laptop:
+
+```powershell
+python3 win/reactive_nav/enviador_yolo.py --robot-ip 10.60.199.200 --port 6611
+```
+
 ## Robot setup
 
 On the robot:

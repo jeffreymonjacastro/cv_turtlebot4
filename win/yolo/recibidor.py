@@ -19,7 +19,9 @@ import numpy as np
 
 # ========= Telemetria =========
 ROBOT_IP = os.environ.get("ROBOT_IP", "10.60.199.200")
-ROBOT_PORT = int(os.environ.get("ROBOT_PORT", os.environ.get("YOLO_TELEMETRY_PORT", "6610")))
+ROBOT_PORT = int(
+    os.environ.get("ROBOT_PORT", os.environ.get("YOLO_TELEMETRY_PORT", "6610"))
+)
 
 DESIRED_DOMAIN_ID = 2
 PAIRING_CODE = "ROBOT_A_2"
@@ -45,7 +47,7 @@ MODEL_CANDIDATES = [
         else None
     ),
     REPO_ROOT / "models" / "signals" / "best.pt",
-    REPO_ROOT / "kaggle" / "v3" / "outputs" / "best.pt",
+    REPO_ROOT / "kaggle" / "v4" / "outputs" / "best.pt",
 ]
 SIGNAL_OUTPUT_DIR = REPO_ROOT / "output" / "signals"
 LATEST_SIGNAL_PATH = SIGNAL_OUTPUT_DIR / "latest_signal.json"
@@ -465,7 +467,9 @@ def handle_img(parts):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("robot_ip", nargs="?", default=ROBOT_IP, help="IP del TurtleBot")
+    parser.add_argument(
+        "robot_ip", nargs="?", default=ROBOT_IP, help="IP del TurtleBot"
+    )
     parser.add_argument(
         "--view-only",
         action="store_true",
@@ -504,7 +508,9 @@ def main():
     do_handshake(sock, robot_addr)
 
     if _view_only:
-        print("[MAIN] Recibiendo frames. YOLO desactivado por --view-only. Ctrl+C para salir.")
+        print(
+            "[MAIN] Recibiendo frames. YOLO desactivado por --view-only. Ctrl+C para salir."
+        )
     else:
         print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
         print(
