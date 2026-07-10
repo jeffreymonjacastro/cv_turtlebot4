@@ -28,6 +28,22 @@ Do not run `win/yolo/enviador.py` for this stack. That legacy script sends
 wheel commands directly. Here, YOLO and QR only write semantic JSON files; the
 robot-side arbiter owns motion.
 
+## Prerequisite: Laptop QR Environment
+
+The laptop QR path depends on `zxing-cpp` from `pyproject.toml`/`uv.lock`.
+`requirements.txt` is not the authoritative dependency source for the ZXing
+autonomous run.
+
+Before starting Terminal B, verify the local `uv` environment can import ZXing:
+
+```bash
+cd /Users/katharsis/Developer/cv/turtle4
+uv run python -c "import importlib.metadata, zxingcpp; print(importlib.metadata.version('zxing-cpp'), zxingcpp.__file__)"
+```
+
+The current promoted decoder variant list, including the late `gray_3x` QR
+scan fix, is documented in `docs/QR_ZXING_ARCHITECTURE.md`.
+
 ## 0. Sync Code to the Robot
 
 Run on the Mac:
