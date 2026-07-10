@@ -31,9 +31,8 @@ Do not start with maze simulation. Start with real logs and recovery-specific di
 Use the capture workflow in `docs/NAV_REAL_DATA_CAPTURE_FOR_TURNS.md` for the actual robot session. The minimum sequence is:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=2
-cd /home/ubuntu
+cd /home/ubuntu/reactive_nav_test
 ```
 
 Then run the `wall_follow_tuned` capture command that matches the scenario:

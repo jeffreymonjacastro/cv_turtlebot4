@@ -386,6 +386,12 @@ class BehaviorArbiter:
                 debug["angular_smoothing_applied"] = True
                 debug["angular_smoothing_input_yaw"] = yaw
             yaw = smoothed_yaw
+            if debug.get("corner_yaw_veto") == "front_left" or debug.get("side_yaw_veto") == "left":
+                yaw = min(yaw, 0.0)
+                debug["angular_smoothing_veto_clamped"] = True
+            elif debug.get("corner_yaw_veto") == "front_right" or debug.get("side_yaw_veto") == "right":
+                yaw = max(yaw, 0.0)
+                debug["angular_smoothing_veto_clamped"] = True
             self._previous_smoothed_yaw = yaw
         else:
             self._previous_smoothed_yaw = yaw

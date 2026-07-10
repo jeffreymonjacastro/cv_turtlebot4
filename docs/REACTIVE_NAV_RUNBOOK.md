@@ -448,6 +448,186 @@ scan_count increasing
 lidar_age < 0.5s
 ```
 
+## Real-movement test for `wall_follow_less_conservative`
+
+Use this only after the dry-run gates pass. This profile is intentionally less
+conservative than `wall_follow_tuned`, so treat it as a measured candidate, not
+as the new default.
+
+Required gates before motion:
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh angle_offset_dryrun \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Acceptance before continuing:
+
+```text
+fresh scan callbacks
+dry_run=True
+enable_motion=False
+front/left/right sectors look physically sane
+no emergency-stop burst caused by obviously wrong angle offset
+```
+
+The movement tests below save each run under:
+
+```text
+/home/ubuntu/output/robot_runs/<timestamp>_wall_follow_less_conservative_<scenario>/
+```
+
+Each run directory includes:
+
+```text
+reactive_nav_debug.jsonl     primary evidence for extraction/replay/ablation
+collision_events.jsonl       Create 3 hazard/collision evidence, if any
+collision_frames/            camera frames near collision events, if available
+profile.yaml                 exact profile used for the run
+operator_note.md             human observation template
+bag/                         optional ROS bag when --bag is used
+```
+
+### Candidate left-turn movement capture
+
+Put the robot in open space with a safe left-turn corridor/aisle, and keep a
+human ready to stop it. This command injects a synthetic LEFT sign by default so
+the test actually exercises `TURNING_LEFT` instead of depending on YOLO timing.
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh left_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence includes TURNING_LEFT and/or ALIGNING_AFTER_TURN
+published commands are non-zero only while dry_run=False enable_motion=True
+emergency stop still interrupts if front/side clearance becomes unsafe
+run directory printed at the end
+```
+
+### Candidate right-turn movement capture
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh right_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence includes TURNING_RIGHT and/or ALIGNING_AFTER_TURN
+no repeated turn/recovery loop
+no corner/side scrape intervention
+run directory printed at the end
+```
+
+### Candidate front-blocked recovery movement capture
+
+Use a controlled front-blocked setup with visible escape room to at least one
+side. Do not box the robot into a real collision. This test is meant to verify
+that recovery can rotate/select a gap and exit instead of freezing in place.
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh front_blocked_recovery \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 30 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence may enter RECOVERY or FRONT_BLOCKED_SELECT_FREE_GAP
+recovery should publish a turn command when there is a safe open side
+recovery should exit when front clearance becomes safe
+no long stationary loop with front blocked and zero yaw
+```
+
+### Optional bag recording
+
+Use `--bag` for the best replay evidence if disk space allows:
+
+```bash
+bash scripts/run_turn_recovery_capture.sh left_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --bag
+```
+
+The JSONL log is still the primary input for the current extraction/replay
+pipeline. The bag is extra evidence for later scan-level reconstruction.
+
+### Pull movement evidence back to the Mac
+
+From the Mac:
+
+```bash
+mkdir -p output/robot_runs
+rsync -av turtlebot4:/home/ubuntu/output/robot_runs/ output/robot_runs/
+```
+
+If you only want the new candidate runs:
+
+```bash
+mkdir -p output/robot_runs
+rsync -av --include='*/' --include='*wall_follow_less_conservative*/***' --exclude='*' \
+  turtlebot4:/home/ubuntu/output/robot_runs/ \
+  output/robot_runs/
+```
+
+### Analyze movement logs for replay/ablation
+
+Run these locally after rsync:
+
+```bash
+.venv/bin/python -m pytest tests/
+
+.venv/bin/python scripts/extract_turn_recovery_intervals.py \
+  output/robot_runs/*wall_follow_less_conservative*/reactive_nav_debug.jsonl \
+  --out-dir output/turn_recovery_analysis/wall_follow_less_conservative_real_movement
+
+.venv/bin/python scripts/replay_turn_recovery_intervals.py \
+  --intervals output/turn_recovery_analysis/wall_follow_less_conservative_real_movement/failure_intervals.jsonl \
+  --profiles wall_follow_tuned wall_follow_less_conservative \
+  --out-dir output/turn_recovery_replay/wall_follow_less_conservative_real_movement
+
+.venv/bin/python scripts/run_turn_recovery_ablation.py \
+  --intervals output/turn_recovery_analysis/wall_follow_less_conservative_real_movement/failure_intervals.jsonl \
+  --out-dir output/turn_recovery_ablation/wall_follow_less_conservative_real_movement
+```
+
+If `failure_intervals.jsonl` is empty, keep the raw `reactive_nav_debug.jsonl`
+runs anyway. They are still useful as passing movement evidence and can be used
+to verify that future controller changes do not regress turn entry, recovery
+exit, or safety veto behavior.
+
+### Promotion rule
+
+Do not replace `wall_follow_tuned` from one physical run. Promote the candidate
+only if the pulled logs show:
+
+```text
+left and right movement captures enter turn states when forced signs are fresh
+front-blocked recovery does not stay frozen with zero yaw
+no increase in corner/side risk relative to baseline replay
+no repeated turn/recovery state loop
+no emergency-stop burst caused by relaxed thresholds
+offline replay/ablation confirms the improvement source
+```
+
 ## If logs show non-zero cmd but robot does not move
 
 Example:

@@ -51,6 +51,10 @@ from ubuntu.reactive_nav.wall_following import NavigationObservation, create_nav
 PROFILE_CONFIGS = {
     "wall_follow_safe": ("wall_follow", REPO_ROOT / "ubuntu/reactive_nav/configs/wall_follow_safe.yaml"),
     "wall_follow_tuned": ("wall_follow", REPO_ROOT / "ubuntu/reactive_nav/configs/wall_follow_tuned.yaml"),
+    "wall_follow_less_conservative": (
+        "wall_follow",
+        REPO_ROOT / "ubuntu/reactive_nav/configs/wall_follow_less_conservative.yaml",
+    ),
     "follow_gap_safe": ("follow_gap", REPO_ROOT / "ubuntu/reactive_nav/configs/follow_gap_safe.yaml"),
     "follow_gap_tuned": ("follow_gap", REPO_ROOT / "ubuntu/reactive_nav/configs/follow_gap_tuned.yaml"),
     "focm_safe": ("focm", REPO_ROOT / "ubuntu/reactive_nav/configs/focm_safe.yaml"),
@@ -181,7 +185,10 @@ def replay_file(path: Path, profile_name: str, out_dir: Path, dt_s: float) -> tu
             t = index * dt_s
             now = sim_start + t
             scan = scan_from_record(record, t)
-            sectors = extract_sectors(scan)
+            sectors = extract_sectors(
+                scan,
+                robust_percentile=float(params.get("sector_robust_percentile", 0.10)),
+            )
             lidar_fresh_value = nested(record, "freshness", "lidar_fresh")
             lidar_fresh = True if lidar_fresh_value is None else bool(lidar_fresh_value)
             nav_suggestion = nav.compute(NavigationObservation(sectors, now, dt_s)) if lidar_fresh else None

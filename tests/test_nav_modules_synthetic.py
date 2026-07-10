@@ -1,4 +1,6 @@
 from pathlib import Path
+import math
+from types import SimpleNamespace
 
 from scripts.compare_nav_profiles import summarize
 from scripts.replay_nav_scenarios import (
@@ -10,6 +12,19 @@ from scripts.replay_nav_scenarios import (
 )
 from ubuntu.reactive_nav.lidar_sectors import extract_sectors
 from ubuntu.reactive_nav.wall_following import NavigationObservation, create_navigation_module
+
+
+def _scan_with_narrow_open_gap(start_deg: int, end_deg: int):
+    ranges = [0.25] * 361
+    for angle in range(start_deg, end_deg + 1):
+        ranges[angle + 180] = 2.0
+    return SimpleNamespace(
+        ranges=ranges,
+        range_min=0.05,
+        range_max=4.0,
+        angle_min=-math.pi,
+        angle_increment=math.pi / 180.0,
+    )
 
 
 def test_all_navigation_modules_compute_bounded_open_corridor_commands():
@@ -46,6 +61,24 @@ def test_wall_follow_recovery_does_not_return_zero_when_front_is_blocked():
     assert suggestion.mode == "RECOVERY"
     assert suggestion.command.linear_x == 0.0
     assert abs(suggestion.command.angular_z) > 0.0
+
+
+def test_wall_follow_recovery_uses_configured_gap_width():
+    sectors = extract_sectors(_scan_with_narrow_open_gap(30, 45))
+    strict = create_navigation_module(
+        "wall_follow",
+        **nav_kwargs({**load_replay_profile("wall_follow"), "gap_min_width_deg": 18.0}),
+    )
+    relaxed = create_navigation_module(
+        "wall_follow",
+        **nav_kwargs({**load_replay_profile("wall_follow"), "gap_min_width_deg": 14.0}),
+    )
+
+    strict_suggestion = strict.compute(NavigationObservation(sectors, now=20.0, dt=0.1))
+    relaxed_suggestion = relaxed.compute(NavigationObservation(sectors, now=20.0, dt=0.1))
+
+    assert strict_suggestion.debug["gap_count"] == 0.0
+    assert relaxed_suggestion.debug["gap_count"] == 1.0
 
 
 def test_synthetic_replay_summarizes_stale_lidar_as_safe_stop(tmp_path):

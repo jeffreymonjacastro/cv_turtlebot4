@@ -136,7 +136,10 @@ def replay_file(path: Path, module_name: str, out_dir: Path, dt_s: float) -> Pat
             t = index * dt_s
             now = sim_start + t
             scan = scan_from_record(record, t)
-            sectors = extract_sectors(scan)
+            sectors = extract_sectors(
+                scan,
+                robust_percentile=float(params.get("sector_robust_percentile", 0.10)),
+            )
             lidar_fresh = bool(nested(record, "freshness", "lidar_fresh") if nested(record, "freshness", "lidar_fresh") is not None else True)
             nav_suggestion = nav.compute(NavigationObservation(sectors, now, dt_s)) if lidar_fresh else None
             output = arbiter.decide(

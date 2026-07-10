@@ -76,6 +76,18 @@ def test_noisy_scan_keeps_front_sector_usable():
     assert 1.5 <= sectors.distance("front") <= 2.1
 
 
+def test_sector_percentile_can_be_raised_to_ignore_more_close_outliers():
+    scan = corridor_scan(front=2.0, left=0.7, right=0.7)
+    for index in range(177, 184):
+        scan.ranges[index] = 0.30
+
+    cautious = extract_sectors(scan, robust_percentile=0.10)
+    relaxed = extract_sectors(scan, robust_percentile=0.20)
+
+    assert cautious.distance("front") < 1.0
+    assert relaxed.distance("front") > 1.5
+
+
 def test_angle_offset_zero_keeps_front_obstacle_in_front_sector():
     sectors = extract_sectors(_single_obstacle_scan(0.0), angle_offset_deg=0.0)
 

@@ -140,7 +140,10 @@ def replay_interval(
         for local_index, record in enumerate(target_records):
             now = sim_start + local_index * dt_s
             scan = scan_from_record(record, local_index * dt_s)
-            sectors = extract_sectors(scan)
+            sectors = extract_sectors(
+                scan,
+                robust_percentile=float(params.get("sector_robust_percentile", 0.10)),
+            )
             lidar_fresh = nested(record, "freshness", "lidar_fresh")
             lidar_fresh = True if lidar_fresh is None else bool(lidar_fresh)
             suggestion = nav.compute(NavigationObservation(sectors, now, dt_s)) if lidar_fresh else None

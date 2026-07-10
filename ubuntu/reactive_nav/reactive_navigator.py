@@ -167,6 +167,7 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("cmd_topic", "/cmd_vel")
             self.declare_parameter("cmd_msg_type", "TwistStamped")
             self.declare_parameter("lidar_yaw_offset_deg", 90.0)
+            self.declare_parameter("sector_robust_percentile", 0.10)
             self.declare_parameter("dry_run", True)
             self.declare_parameter("enable_motion", False)
             self.declare_parameter("publish_zero_in_dry_run", True)
@@ -262,6 +263,7 @@ def run_ros_node(args=None) -> None:
             self.cmd_topic = self._param_str("cmd_topic")
             self.cmd_msg_type = self._param_str("cmd_msg_type").lower()
             self.lidar_yaw_offset_deg = self._param_float("lidar_yaw_offset_deg")
+            self.sector_robust_percentile = self._param_float("sector_robust_percentile")
             self.dry_run = self._param_bool("dry_run")
             self.enable_motion = self._param_bool("enable_motion")
             self.publish_zero_in_dry_run = self._param_bool("publish_zero_in_dry_run")
@@ -544,7 +546,11 @@ def run_ros_node(args=None) -> None:
             self.latest_scan = msg
             self.last_scan_time = time.monotonic()
             self.scan_count += 1
-            self.latest_sectors = extract_sectors(msg, angle_offset_deg=self.lidar_yaw_offset_deg)
+            self.latest_sectors = extract_sectors(
+                msg,
+                angle_offset_deg=self.lidar_yaw_offset_deg,
+                robust_percentile=self.sector_robust_percentile,
+            )
 
         def image_callback(self, msg) -> None:
             self.last_image_time = time.monotonic()
@@ -876,6 +882,7 @@ def run_ros_node(args=None) -> None:
                 "emergency": self._json_clean(emergency_debug),
                 "lidar": {
                     "angle_offset_deg": self._json_float(self.lidar_yaw_offset_deg),
+                    "sector_robust_percentile": self._json_float(self.sector_robust_percentile),
                     "valid_count": sectors.valid_count if sectors is not None else 0,
                     "total_count": sectors.total_count if sectors is not None else 0,
                     "sector_distance_m": sector_distances,

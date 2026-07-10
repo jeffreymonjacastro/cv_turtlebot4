@@ -200,6 +200,26 @@ def test_front_corner_veto_can_be_disabled_for_ablation():
     assert output.debug["corner_slowdown"] is False
 
 
+def test_angular_smoothing_does_not_reintroduce_vetoed_corner_yaw():
+    open_sectors = extract_sectors(corridor_scan(front=1.4, front_left=1.2, front_right=1.2, left=1.0, right=1.0))
+    corner_sectors = extract_sectors(corridor_scan(front=1.4, front_left=0.40, front_right=1.2, left=1.0, right=1.0))
+    arbiter = BehaviorArbiter(
+        front_corner_avoid_distance=0.62,
+        angular_smoothing_alpha=0.65,
+    )
+
+    arbiter.decide(
+        ArbiterInput(open_sectors, True, _suggest(linear=0.09, yaw=0.45), SignalState(), False, 10.0)
+    )
+    output = arbiter.decide(
+        ArbiterInput(corner_sectors, True, _suggest(linear=0.09, yaw=0.45), SignalState(), False, 10.1)
+    )
+
+    assert output.debug["corner_yaw_veto"] == "front_left"
+    assert output.debug["angular_smoothing_veto_clamped"] is True
+    assert output.command.angular_z <= 0.0
+
+
 def test_anti_spin_limiter_requires_repeated_spin_candidate_cycles():
     sectors = extract_sectors(corridor_scan(front=2.0, left=1.0, right=1.0))
     arbiter = BehaviorArbiter(
@@ -252,6 +272,24 @@ def test_blocked_sign_stays_in_candidate_without_turning():
     assert second.state == "SIGN_CANDIDATE"
     assert "TURN_LEFT_BLOCKED" in second.reason
     assert second.command == TwistCommand()
+
+
+def test_lower_turn_clearance_allows_tight_but_safe_turn_candidate():
+    sectors = extract_sectors(corridor_scan(front=1.2, left=0.7, right=0.7, front_left=0.36))
+    arbiter = BehaviorArbiter(
+        turn_clearance=0.35,
+        side_stop_distance=0.10,
+        front_stop_distance=0.24,
+        sign_debouncer=SignDebouncer(confirm_window=2, confirm_count=2),
+    )
+
+    arbiter.decide(ArbiterInput(sectors, True, _suggest(), _signal("left", "tight-left"), False, 1.0))
+    second = arbiter.decide(
+        ArbiterInput(sectors, True, _suggest(), _signal("left", "tight-left"), False, 1.1)
+    )
+
+    assert second.state == "TURNING_LEFT"
+    assert second.command.angular_z > 0.0
 
 
 def test_stop_sign_triggers_uturn_instead_of_manual_stop():

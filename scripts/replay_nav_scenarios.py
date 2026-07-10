@@ -53,6 +53,7 @@ SCAN_SIZE = int((ANGLE_MAX_DEG - ANGLE_MIN_DEG) / ANGLE_STEP_DEG) + 1
 DEFAULT_PROFILE: Dict[str, Any] = {
     "profile_name": "offline_default",
     "nav_module": "wall_follow",
+    "sector_robust_percentile": 0.10,
     "base_speed": 0.10,
     "narrow_speed": 0.06,
     "turn_slow_speed": 0.07,
@@ -892,7 +893,10 @@ def run_scenario(
             t = min(duration, step_index * dt_s)
             now = sim_start + t
             scan = scenario.scan_at(t, rng)
-            sectors = extract_sectors(scan)
+            sectors = extract_sectors(
+                scan,
+                robust_percentile=_coerce_float(params, "sector_robust_percentile"),
+            )
             lidar_fresh = scenario.lidar_fresh_at(t)
             lidar_age_s = 0.0 if lidar_fresh else max_scan_age_s + dt_s + t
 

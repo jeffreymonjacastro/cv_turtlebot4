@@ -19,12 +19,28 @@ optional rosbag with /scan and command topics
 
 ## Robot setup
 
+From the Mac/local repo, push the current helper, reactive navigation code, config, and docs to the TurtleBot:
+
+```bash
+rsync -av \
+  scripts/run_turn_recovery_capture.sh \
+  turtlebot4:/home/ubuntu/reactive_nav_test/scripts/run_turn_recovery_capture.sh
+
+rsync -av --delete \
+  ubuntu/reactive_nav/ \
+  turtlebot4:/home/ubuntu/reactive_nav_test/reactive_nav/
+
+rsync -av \
+  docs/NAV_REAL_DATA_CAPTURE_FOR_TURNS.md \
+  docs/NAV_RECOVERY_TURN_DEBUGGING.md \
+  turtlebot4:/home/ubuntu/reactive_nav_test/docs/
+```
+
 Run these commands on the TurtleBot before starting a capture session:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=2
-cd /home/ubuntu
+cd /home/ubuntu/reactive_nav_test
 mkdir -p /home/ubuntu/output/robot_runs
 ```
 
@@ -64,20 +80,35 @@ summary_after_analysis.md           # generated later
 
 ## Capture command templates
 
-Use `wall_follow_tuned.yaml` as the starting profile for turn/recovery evidence.
+Use `wall_follow_tuned.yaml` as the baseline profile for turn/recovery evidence.
+Use `wall_follow_less_conservative.yaml` only as an experimental candidate after
+capturing/replaying baseline evidence.
 
 ## Fast helper
 
 For faster testing, use the shell helper instead of assembling the command by hand:
 
 ```bash
-scripts/run_turn_recovery_capture.sh angle_offset_dryrun
-scripts/run_turn_recovery_capture.sh left_turn
-scripts/run_turn_recovery_capture.sh right_turn
-scripts/run_turn_recovery_capture.sh front_blocked_recovery
+bash scripts/run_turn_recovery_capture.sh angle_offset_dryrun --duration-sec 45 --no-bag
+bash scripts/run_turn_recovery_capture.sh left_turn
+bash scripts/run_turn_recovery_capture.sh right_turn
+bash scripts/run_turn_recovery_capture.sh front_blocked_recovery
 ```
 
-Add `--no-bag` if you only want the live robot log and not a rosbag, or `--run-name <name>` if you want the folder name to be deterministic.
+Add `--no-bag` if you only want the live robot log and not a rosbag, `--duration-sec <seconds>` for a bounded run, or `--run-name <name>` if you want the folder name to be deterministic.
+
+For isolated turn captures, `left_turn` and `right_turn` write a synthetic
+`latest_signal.json` by default so the arbiter should enter `TURNING_LEFT` or
+`TURNING_RIGHT` without depending on YOLO timing. Add `--no-force-signal` when
+you specifically want YOLO-only sign evidence.
+
+To try the less-conservative candidate profile:
+
+```bash
+bash scripts/run_turn_recovery_capture.sh left_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20
+```
 
 ### 1. Angle-offset dry-run checks
 

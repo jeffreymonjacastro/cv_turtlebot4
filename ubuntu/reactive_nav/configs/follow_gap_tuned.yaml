@@ -22,11 +22,11 @@
     avoidance_gain: 0.72
     gap_bubble_radius_m: 0.3905
     gap_min_width_deg: 22.7537
-    gap_search_min_deg: -120
-    gap_search_max_deg: 120
+    gap_search_min_deg: -120.0
+    gap_search_max_deg: 120.0
     gap_heading_scale_deg: 75.0631
-    gap_distance_score_cap_m: 3
-    gap_forward_cone_deg: 18
+    gap_distance_score_cap_m: 3.0
+    gap_forward_cone_deg: 18.0
     robot_width_m: 0.36
     gap_side_margin_m: 0.0967
     turn_clearance: 0.4

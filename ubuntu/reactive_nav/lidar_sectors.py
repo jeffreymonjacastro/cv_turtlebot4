@@ -132,14 +132,14 @@ def scan_to_points(scan, *, angle_offset_deg: float = 0.0) -> Tuple[ScanPoint, .
     return tuple(points)
 
 
-def _stats_for_points(name: str, values: Iterable[float]) -> SectorStats:
+def _stats_for_points(name: str, values: Iterable[float], robust_percentile: float) -> SectorStats:
     values = list(values)
     if not values:
         return SectorStats(name, None, None, None, 0)
     return SectorStats(
         name=name,
         min_range=min(values),
-        robust_min_range=_percentile(values, 0.10),
+        robust_min_range=_percentile(values, robust_percentile),
         median_range=median(values),
         valid_count=len(values),
     )
@@ -150,8 +150,10 @@ def extract_sectors(
     sector_degrees: Dict[str, Tuple[float, float]] = SECTOR_DEGREES,
     *,
     angle_offset_deg: float = 0.0,
+    robust_percentile: float = 0.10,
 ) -> SectorMap:
     """Build robust min/median distances for each navigation sector."""
+    robust_percentile = max(0.0, min(1.0, float(robust_percentile)))
     points = scan_to_points(scan, angle_offset_deg=angle_offset_deg)
     sectors: Dict[str, SectorStats] = {}
     for name, (start_deg, end_deg) in sector_degrees.items():
@@ -160,7 +162,7 @@ def extract_sectors(
             for point in points
             if _angle_in_sector(point.angle_deg, start_deg, end_deg)
         ]
-        sectors[name] = _stats_for_points(name, sector_values)
+        sectors[name] = _stats_for_points(name, sector_values, robust_percentile)
 
     return SectorMap(
         sectors=sectors,

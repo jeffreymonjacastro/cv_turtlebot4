@@ -211,7 +211,10 @@ def _replay_real_log_with_params(
         for index, record in enumerate(records):
             t = index * dt_s
             now = sim_start + t
-            sectors = extract_sectors(scan_from_record(record, t))
+            sectors = extract_sectors(
+                scan_from_record(record, t),
+                robust_percentile=float(params.get("sector_robust_percentile", 0.10)),
+            )
             lidar_fresh = bool(record.get("freshness", {}).get("lidar_fresh", True))
             nav_suggestion = nav.compute(NavigationObservation(sectors, now, dt_s)) if lidar_fresh else None
             output = arbiter.decide(

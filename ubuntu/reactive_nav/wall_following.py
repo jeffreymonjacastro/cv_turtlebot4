@@ -62,6 +62,10 @@ class WallFollowNavigation:
         side_avoid_distance: float = 0.34,
         front_corner_avoid_distance: float = 0.62,
         avoidance_gain: float = 0.65,
+        gap_min_width_deg: float = 18.0,
+        gap_search_min_deg: float = -120.0,
+        gap_search_max_deg: float = 120.0,
+        gap_forward_cone_deg: float = 18.0,
         **_unused,
     ):
         self.base_speed = base_speed
@@ -78,6 +82,10 @@ class WallFollowNavigation:
         self.side_avoid_distance = side_avoid_distance
         self.front_corner_avoid_distance = front_corner_avoid_distance
         self.avoidance_gain = avoidance_gain
+        self.gap_min_width_deg = max(1.0, gap_min_width_deg)
+        self.gap_search_min_deg = gap_search_min_deg
+        self.gap_search_max_deg = gap_search_max_deg
+        self.gap_forward_cone_deg = max(0.0, gap_forward_cone_deg)
         self._last_error = None
         self._last_time = time.monotonic()
 
@@ -187,11 +195,14 @@ class WallFollowNavigation:
         gap = largest_free_gap(
             observation.sectors.points,
             min_clearance_m=self.recovery_clearance,
-            min_width_deg=20.0,
+            min_width_deg=self.gap_min_width_deg,
+            search_min_deg=self.gap_search_min_deg,
+            search_max_deg=self.gap_search_max_deg,
         )
         if gap is not None:
             yaw = max(-self.max_yaw, min(self.max_yaw, gap.center_deg / 70.0))
-            forward = self.narrow_speed if abs(gap.center_deg) < 18.0 and front and front > 0.42 else 0.0
+            front_clear_enough = front is not None and front >= self.recovery_clearance
+            forward = self.narrow_speed if abs(gap.center_deg) < self.gap_forward_cone_deg and front_clear_enough else 0.0
             turn_fallback = "none"
             if forward == 0.0 and abs(yaw) < self.max_yaw * 0.35:
                 left_score = left if left is not None else 0.0
