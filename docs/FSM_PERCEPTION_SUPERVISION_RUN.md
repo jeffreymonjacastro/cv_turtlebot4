@@ -151,6 +151,8 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p publish_zero_in_dry_run:=true \
   -p sign_confirm_window:=2 \
   -p sign_confirm_count:=2 \
+  -p enable_qr_detection:=true \
+  -p qr_check_every_n_frames:=1 \
   -p qr_confirm_count:=1 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_injection_path:=/home/ubuntu/output/qr_injection.json \
@@ -457,6 +459,9 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
+  -p enable_qr_detection:=true \
+  -p qr_check_every_n_frames:=1 \
+  -p qr_confirm_count:=1 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_injection_path:=/home/ubuntu/output/qr_injection.json \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
@@ -487,6 +492,35 @@ accepted signs show yolo_event_status=accepted or candidates show explicit rejec
 QR codes produce raw_qr_payload and either accepted or duplicate status
 not-detected QR shows qr_decode_status=not_detected rather than silent failure
 published command remains zero
+```
+
+If the laptop YOLO view is working but QR does not appear in supervision, run a
+camera-only QR probe on the robot:
+
+```bash
+set +u
+source /opt/ros/jazzy/setup.bash
+set -u
+export ROS_DOMAIN_ID=2
+
+cd /home/ubuntu/reactive_nav_test
+python3 scripts/probe_qr_camera.py \
+  --frames 80 \
+  --save-frame /home/ubuntu/output/qr_probe_frame.jpg
+```
+
+Interpretation:
+
+```text
+status=decoded:
+  QR camera decoding works. If the navigator still misses it, inspect
+  reactive_nav_debug.jsonl supervision.qr_* fields.
+
+status=detected_not_decoded:
+  The QR shape is visible but too small/blurred/low contrast in that frame.
+
+status=not_detected:
+  The QR is not visible enough in the OAK-D preview image.
 ```
 
 ---
@@ -527,6 +561,9 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
+  -p enable_qr_detection:=true \
+  -p qr_check_every_n_frames:=1 \
+  -p qr_confirm_count:=1 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
@@ -639,4 +676,3 @@ export ROS_DOMAIN_ID=2
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/TwistStamped \
   "{header: {frame_id: base_link}, twist: {linear: {x: 0.0}, angular: {z: 0.0}}}"
 ```
-

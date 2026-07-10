@@ -53,3 +53,7 @@
     sign_min_confidence: 0.65
     sign_min_area_ratio: 0.02
     sign_cooldown_s: 3.0
+
+    enable_qr_detection: true
+    qr_check_every_n_frames: 1
+    qr_confirm_count: 1

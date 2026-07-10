@@ -21,6 +21,7 @@ try:
     from .behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState, SignDebouncer
     from .diagnostics import DiagnosticSnapshot, PersistentJsonlLogger, UdpDiagnostics
     from .lidar_sectors import SectorMap, extract_sectors
+    from .qr_detection import decode_qr_image
     from .qr_logger import QRLogger
     from .turn_controller import TurnController
     from .wall_following import NavigationObservation, TwistCommand, create_navigation_module
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - direct script fallback
     from behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState, SignDebouncer
     from diagnostics import DiagnosticSnapshot, PersistentJsonlLogger, UdpDiagnostics
     from lidar_sectors import SectorMap, extract_sectors
+    from qr_detection import decode_qr_image
     from qr_logger import QRLogger
     from turn_controller import TurnController
     from wall_following import NavigationObservation, TwistCommand, create_navigation_module
@@ -636,20 +638,25 @@ def run_ros_node(args=None) -> None:
                 return
             try:
                 cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-                detected, points = self.qr_detector.detect(cv_img)
-                if not detected or not self._valid_qr_points(points):
+                result = decode_qr_image(self.qr_detector, cv_img)
+                if not result.content:
                     self.last_qr_supervision = {
                         "raw_qr_payload": None,
-                        "qr_decode_status": "not_detected",
+                        "qr_decode_status": result.status,
                         "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
                         "qr_event": "NONE",
                         "qr_event_status": "idle",
-                        "qr_rejection_reason": "not_detected",
+                        "qr_rejection_reason": result.status,
                         "qr_source": "camera",
+                        "qr_decode_variant": result.variant,
+                        "qr_detected_count": result.detected_count,
+                        "qr_decode_error": result.error,
                     }
                     return
-                decoded = self.qr_detector.decode(cv_img, points)
-                content = decoded[0] if isinstance(decoded, tuple) else decoded
+                content = result.content
+                qr_decode_status = result.status
+                qr_decode_variant = result.variant
+                qr_detected_count = result.detected_count
             except Exception as exc:
                 self.last_qr_supervision = {
                     "raw_qr_payload": None,
@@ -661,17 +668,6 @@ def run_ros_node(args=None) -> None:
                     "qr_source": "camera",
                 }
                 self.diag.log("WARN", f"[QR] decode error: {exc}")
-                return
-            if not content:
-                self.last_qr_supervision = {
-                    "raw_qr_payload": None,
-                    "qr_decode_status": "empty",
-                    "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
-                    "qr_event": "NONE",
-                    "qr_event_status": "rejected",
-                    "qr_rejection_reason": "empty_decode",
-                    "qr_source": "camera",
-                }
                 return
 
             context = self._distance_context()
@@ -686,35 +682,41 @@ def run_ros_node(args=None) -> None:
             if event is None:
                 self.last_qr_supervision = {
                     "raw_qr_payload": content,
-                    "qr_decode_status": "decoded",
+                    "qr_decode_status": qr_decode_status,
                     "qr_confirmation_progress": progress,
                     "qr_event": content,
                     "qr_event_status": "candidate",
                     "qr_rejection_reason": "awaiting_confirmation",
                     "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
                 }
                 return
             if event.logged:
                 self.last_qr_time = time.monotonic()
                 self.last_qr_supervision = {
                     "raw_qr_payload": content,
-                    "qr_decode_status": "decoded",
+                    "qr_decode_status": qr_decode_status,
                     "qr_confirmation_progress": progress,
                     "qr_event": content,
                     "qr_event_status": "accepted",
                     "qr_rejection_reason": "none",
                     "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
                 }
                 self.diag.log("INFO", f"[QR] logged content={event.content!r} path={event.path}")
             elif event.duplicate:
                 self.last_qr_supervision = {
                     "raw_qr_payload": content,
-                    "qr_decode_status": "decoded",
+                    "qr_decode_status": qr_decode_status,
                     "qr_confirmation_progress": progress,
                     "qr_event": content,
                     "qr_event_status": "duplicate",
                     "qr_rejection_reason": event.reason,
                     "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
                 }
                 now = time.monotonic()
                 if now - self.last_qr_duplicate_log_time >= 5.0:

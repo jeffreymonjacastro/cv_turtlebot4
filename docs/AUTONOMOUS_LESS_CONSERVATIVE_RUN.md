@@ -131,6 +131,9 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p enable_motion:=true \
   -p telemetry_port:=6612 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
+  -p enable_qr_detection:=true \
+  -p qr_check_every_n_frames:=1 \
+  -p qr_confirm_count:=1 \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
   -p collision_log_path:="$RUN_DIR/collision_events.jsonl" \
@@ -154,6 +157,37 @@ qr_log.jsonl                 QR checkpoint evidence
 collision_events.jsonl       Create 3 hazard/collision evidence, if any
 collision_frames/            camera frames near collision events, if available
 ```
+
+QR decoding runs inside the robot-side navigator from the OAK-D image topic. It
+does not depend on YOLO. The `wall_follow_less_conservative` run uses QR every
+frame with one-confirmation logging so checkpoint evidence can be captured even
+while the FSM is in `RECOVERY`, `SENSOR_CHECK`, or `EMERGENCY_STOP`.
+
+If YOLO is visible but QR is not logging, run this non-moving probe on the robot
+while it faces the QR:
+
+```bash
+set +u
+source /opt/ros/jazzy/setup.bash
+set -u
+export ROS_DOMAIN_ID=2
+
+cd /home/ubuntu/reactive_nav_test
+python3 scripts/probe_qr_camera.py \
+  --frames 80 \
+  --save-frame /home/ubuntu/output/qr_probe_frame.jpg
+```
+
+Expected success looks like:
+
+```text
+status=decoded variant=adaptive_threshold content='...'
+```
+
+If it says `detected_not_decoded`, the QR is visible but too degraded/small for
+that frame. Move the robot/camera slightly closer or improve lighting. If it
+says `not_detected`, the QR is not sufficiently visible in the OAK-D preview
+frame.
 
 ## 5. Optional laptop diagnostics terminal
 
