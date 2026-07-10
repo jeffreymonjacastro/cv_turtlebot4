@@ -1,3 +1,5 @@
+import pytest
+
 from scripts.replay_nav_scenarios import corridor_scan
 from ubuntu.reactive_nav.lidar_sectors import extract_sectors
 from ubuntu.reactive_nav.turn_controller import TurnController
@@ -18,6 +20,8 @@ def test_turn_controller_runs_left_turn_then_alignment():
     turning = controller.step(sectors, now=100.01)
     assert turning.state == "TURNING_LEFT"
     assert turning.command.angular_z > 0.0
+    assert turning.debug["turn_elapsed_s"] == turning.debug["turn_duration_s"]
+    assert turning.debug["turn_elapsed_s"] == pytest.approx(0.01)
 
     settling = controller.step(sectors, now=100.0 + controller.turn_seconds + 0.01)
     assert settling.state == "SETTLING_AFTER_TURN"
@@ -62,3 +66,4 @@ def test_turn_controller_times_out_alignment_when_sides_are_missing():
 
     assert timeout.active is False
     assert timeout.reason == "ALIGNMENT_TIMEOUT"
+    assert timeout.debug["turn_completed_reason"] == "ALIGNMENT_TIMEOUT"

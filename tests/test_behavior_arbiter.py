@@ -270,3 +270,40 @@ def test_stop_sign_triggers_uturn_instead_of_manual_stop():
     assert second.reason == "STOP_SIGN_CONFIRMED_UTURN"
     assert second.command.linear_x == 0.0
     assert second.command.angular_z > 0.0
+
+
+def test_active_turn_is_instrumented_and_does_not_use_navigation_recovery():
+    sectors = extract_sectors(corridor_scan(front=1.2, left=0.7, right=0.7))
+    arbiter = BehaviorArbiter()
+    assert arbiter.turns.start("LEFT", now=10.0)
+
+    output = arbiter.decide(
+        ArbiterInput(
+            sectors,
+            True,
+            NavigationSuggestion(TwistCommand(0.0, -0.5), "RECOVERY", "TEST_RECOVERY"),
+            SignalState(),
+            False,
+            10.1,
+        )
+    )
+
+    assert output.state == "TURNING_LEFT"
+    assert output.command.angular_z > 0.0
+    assert output.debug["active_turn_path"] is True
+    assert output.debug["active_turn_bypasses_navigation_recovery"] is True
+    assert output.debug["active_turn_standard_safety_limits_applied"] is False
+
+
+def test_emergency_stop_interrupts_an_active_turn():
+    safe = extract_sectors(corridor_scan(front=1.2, left=0.7, right=0.7))
+    blocked = extract_sectors(corridor_scan(front=0.20, front_center=0.20, left=0.7, right=0.7))
+    arbiter = BehaviorArbiter(front_stop_distance=0.28)
+    assert arbiter.turns.start("RIGHT", now=10.0)
+
+    turning = arbiter.decide(ArbiterInput(safe, True, _suggest(), SignalState(), False, 10.1))
+    emergency = arbiter.decide(ArbiterInput(blocked, True, _suggest(), SignalState(), False, 10.2))
+
+    assert turning.state == "TURNING_RIGHT"
+    assert emergency.state == "EMERGENCY_STOP"
+    assert emergency.command == TwistCommand()

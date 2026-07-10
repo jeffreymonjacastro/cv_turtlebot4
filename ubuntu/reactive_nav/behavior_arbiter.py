@@ -164,6 +164,9 @@ class BehaviorArbiter:
         self._previous_smoothed_yaw: Optional[float] = None
         self._recovery_turn_sign = 0.0
         self._recovery_turn_until = 0.0
+        self._last_output_state = "INIT"
+        self._state_started_at = time.monotonic()
+        self._recovery_started_at: Optional[float] = None
 
     def decide(self, inputs: ArbiterInput) -> ArbiterOutput:
         sectors = inputs.sectors
@@ -389,6 +392,12 @@ class BehaviorArbiter:
 
         debug["safety_output_linear_x"] = linear
         debug["safety_output_angular_z"] = yaw
+        vetoes = [
+            str(debug[name])
+            for name in ("corner_yaw_veto", "side_yaw_veto")
+            if str(debug.get(name, "none")) != "none"
+        ]
+        debug["arbiter_veto_reason"] = ",".join(vetoes) if vetoes else "none"
         return TwistCommand(linear, yaw), debug
 
     def _stabilize_recovery_command(
@@ -397,9 +406,18 @@ class BehaviorArbiter:
         debug: Dict[str, float | str | bool] = {
             "recovery_unstick": "none",
             "recovery_turn_latch": "none",
+            "recovery_timeout": False,
+            "recovery_block_reason": "none",
         }
 
         front = sectors.distance("front")
+        debug["recovery_front_clear"] = front is not None and front >= self.slow_distance
+        debug["recovery_exit_candidate"] = (
+            "front_clear" if debug["recovery_front_clear"] else "front_still_blocked"
+        )
+        debug["recovery_block_reason"] = (
+            "none" if debug["recovery_front_clear"] else "front_below_slow_distance"
+        )
         if front is None or front >= self.slow_distance:
             self._recovery_turn_sign = 0.0
             self._recovery_turn_until = 0.0
@@ -469,7 +487,43 @@ class BehaviorArbiter:
         publish_motion: bool,
         debug: Optional[Dict[str, float | str | bool]] = None,
     ) -> ArbiterOutput:
+        now = time.monotonic()
+        previous_state = self._last_output_state
+        if state != previous_state:
+            self._state_started_at = now
+        state_duration_s = max(0.0, now - self._state_started_at)
+        entering_recovery = state == "RECOVERY" and previous_state != "RECOVERY"
+        if entering_recovery:
+            self._recovery_started_at = now
+        if state != "RECOVERY":
+            self._recovery_started_at = None
+
         merged = self._base_debug()
+        active_turn_path = state in {
+            "TURNING_LEFT",
+            "TURNING_RIGHT",
+            "TURNING_UTURN",
+            "SETTLING_AFTER_TURN",
+            "ALIGNING_AFTER_TURN",
+        }
+        merged.update(
+            {
+                "arbiter_previous_state": previous_state,
+                "state_duration_s": state_duration_s,
+                "active_turn_path": active_turn_path,
+                # Active turns run after the emergency latch and before normal navigation
+                # recovery/safety shaping. This is an observation, not a behavior change.
+                "active_turn_bypasses_navigation_recovery": active_turn_path,
+                "active_turn_standard_safety_limits_applied": not active_turn_path,
+                "recovery_entry": entering_recovery,
+                "recovery_elapsed_s": (
+                    max(0.0, now - self._recovery_started_at)
+                    if state == "RECOVERY" and self._recovery_started_at is not None
+                    else None
+                ),
+            }
+        )
         if debug:
             merged.update(debug)
+        self._last_output_state = state
         return ArbiterOutput(command, state, reason, publish_motion, merged)

@@ -768,3 +768,64 @@ ablation shows which change caused the improvement
 ```
 
 If a change improves average score but worsens safety, corner risk, or spin behavior, reject it.
+
+---
+
+## Recovery/Turn Iteration Protocol
+
+Current focus: improve turn completion and recovery behavior without using Gazebo, ROS simulator, or unnecessary physical robot trial-and-error.
+
+Known recent context:
+
+- LiDAR physical alignment was imperfect.
+- `scan_to_points` now supports an `angle_offset` compensation.
+- The current failure mode is that the robot sometimes starts a turn but gets stuck in `FRONT_BLOCKED_SELECT_FREE_GAP` or `RECOVERY` instead of completing the turn and returning to navigation.
+- Finding-gap recovery may be choosing poor gaps, failing to exit, or being invoked too aggressively during intentional turns.
+
+Do not begin with maze simulation. First exploit real robot data and targeted logs because the robot is currently available and real failure logs are higher-signal than synthetic geometry.
+
+### Required iteration loop
+
+Use this loop for all changes:
+
+```text
+robot/log evidence
+-> identify failure interval
+-> improve diagnostics or replay
+-> make one controlled change
+-> benchmark/replay
+-> compare before/after
+-> keep, reject, or change direction
+```
+
+### Planning-first requirement
+
+When asked to work on this iteration in Codex Plan Mode, do not edit code yet. Produce a plan that includes:
+
+- files to inspect
+- suspected failure mechanisms
+- proposed minimal changes
+- expected metrics
+- commands to run
+- risks and rollback strategy
+- what should wait for execution mode
+
+Only implement after the user approves the plan.
+
+### Priority order
+
+1. Improve recovery/gap/turn diagnostics.
+2. Analyze real stuck intervals.
+3. Replay real stuck intervals offline when possible.
+4. Add targeted ablations.
+5. Run short robot dry-run or targeted physical tests.
+6. Only later add closed-loop maze simulation.
+
+### Must preserve
+
+- Navigation modules suggest commands only.
+- Arbiter owns final command decision and safety.
+- YOLO does not drive wheels directly.
+- QR/sign logic stays outside navigation modules.
+- No offline script publishes `/cmd_vel`.
+- Offline improvements must not be called physically validated.

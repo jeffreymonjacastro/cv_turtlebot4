@@ -99,7 +99,7 @@ class TurnController:
                     True,
                     f"TURNING_{self.direction}",
                     "TIMED_90_DEGREE_TURN",
-                    self.snapshot(turn_completed_reason="ACTIVE"),
+                    self.snapshot(now=now, turn_completed_reason="ACTIVE"),
                 )
             self.phase = "SETTLING"
             self.phase_started = now
@@ -108,7 +108,7 @@ class TurnController:
                 True,
                 "SETTLING_AFTER_TURN",
                 "STOP_BEFORE_ALIGNMENT",
-                self.snapshot(turn_completed_reason="ACTIVE"),
+                self.snapshot(now=now, turn_completed_reason="ACTIVE"),
             )
 
         if self.phase == "SETTLING":
@@ -118,7 +118,7 @@ class TurnController:
                     True,
                     "SETTLING_AFTER_TURN",
                     "SETTLE",
-                    self.snapshot(turn_completed_reason="ACTIVE"),
+                    self.snapshot(now=now, turn_completed_reason="ACTIVE"),
                 )
             self.phase = "ALIGNING"
             self.phase_started = now
@@ -154,7 +154,7 @@ class TurnController:
                         False,
                         "NAVIGATE",
                         "ALIGNMENT_STABLE_SIDE_PAIR",
-                        self.snapshot(),
+                        self.snapshot(now=now),
                     )
                 if elapsed < self.align_max_seconds:
                     return TurnStep(
@@ -162,7 +162,7 @@ class TurnController:
                         True,
                         "ALIGNING_AFTER_TURN",
                         "CENTERING_BETWEEN_WALLS",
-                        self.snapshot(turn_completed_reason="ACTIVE"),
+                        self.snapshot(now=now, turn_completed_reason="ACTIVE"),
                     )
             else:
                 self.last_align_error = 0.0
@@ -175,7 +175,7 @@ class TurnController:
                         True,
                         "ALIGNING_AFTER_TURN",
                         "FRONT_CLEAR_NO_SIDE_PAIR",
-                        self.snapshot(turn_completed_reason="ACTIVE"),
+                        self.snapshot(now=now, turn_completed_reason="ACTIVE"),
                     )
 
             self._finish(now, "ALIGNMENT_TIMEOUT")
@@ -184,19 +184,28 @@ class TurnController:
                 False,
                 "NAVIGATE",
                 "ALIGNMENT_TIMEOUT",
-                self.snapshot(),
+                self.snapshot(now=now),
             )
 
         self._finish(now, "TURN_STATE_RESET")
-        return TurnStep(TwistCommand(), False, "NAVIGATE", "TURN_STATE_RESET", self.snapshot())
+        return TurnStep(TwistCommand(), False, "NAVIGATE", "TURN_STATE_RESET", self.snapshot(now=now))
 
-    def snapshot(self, *, turn_completed_reason: Optional[str] = None) -> Dict[str, float | str | bool]:
+    def snapshot(
+        self,
+        *,
+        now: Optional[float] = None,
+        turn_completed_reason: Optional[str] = None,
+    ) -> Dict[str, float | str | bool]:
+        """Return stable turn diagnostics using the caller's control-clock time."""
+        now = now if now is not None else time.monotonic()
         direction = self.direction or self.last_direction
+        elapsed = max(0.0, now - self.started_at) if self.started_at > 0.0 else 0.0
         return {
             "turn_phase": self.phase,
             "turn_direction": direction.lower(),
             "turn_active": self.active,
-            "turn_duration_s": max(0.0, time.monotonic() - self.started_at) if self.started_at > 0.0 else 0.0,
+            "turn_duration_s": elapsed,
+            "turn_elapsed_s": elapsed,
             "align_error": self.last_align_error,
             "align_yaw": self.last_align_yaw,
             "align_yaw_clamped": self.last_align_yaw_clamped,

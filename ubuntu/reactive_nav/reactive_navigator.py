@@ -301,6 +301,7 @@ def run_ros_node(args=None) -> None:
             self.last_persistent_log_time = 0.0
             self.last_state = ""
             self.last_reason = ""
+            self.state_started_at = time.monotonic()
             self._last_scan_discovery_log = 0.0
 
             nav_kwargs = {
@@ -695,6 +696,10 @@ def run_ros_node(args=None) -> None:
                     now=now,
                 )
             )
+            state_changed = output.state != self.last_state
+            if state_changed:
+                self.state_started_at = now
+            state_duration_s = max(0.0, now - self.state_started_at)
             published_command, motion_enabled = self._publish_command(output.command, output.publish_motion)
             self.last_requested_command = output.command
             self.last_published_command = published_command
@@ -710,6 +715,8 @@ def run_ros_node(args=None) -> None:
                 published_command=published_command,
                 motion_enabled=motion_enabled,
                 dt=dt,
+                now=now,
+                state_duration_s=state_duration_s,
             )
             self._emit_diagnostics(output, sectors, lidar_age)
             self.last_state = output.state
@@ -761,8 +768,9 @@ def run_ros_node(args=None) -> None:
             published_command: TwistCommand,
             motion_enabled: bool,
             dt: float,
+            now: float,
+            state_duration_s: float,
         ) -> None:
-            now = time.monotonic()
             changed = output.state != self.last_state or output.reason != self.last_reason
             if (
                 not changed
@@ -791,7 +799,7 @@ def run_ros_node(args=None) -> None:
 
             nav_debug = dict(nav_suggestion.debug) if nav_suggestion is not None else {}
             output_debug = dict(output.debug) if output.debug else {}
-            turn_debug = self._json_clean(self.turn_controller.snapshot())
+            turn_debug = self._json_clean(self.turn_controller.snapshot(now=now))
             emergency_debug = {
                 key: output_debug.get(key)
                 for key in (
@@ -801,11 +809,32 @@ def run_ros_node(args=None) -> None:
                     "emergency_trigger_count",
                 )
             }
+            recovery_debug = {
+                "entry": output_debug.get("recovery_entry"),
+                "elapsed_s": output_debug.get("recovery_elapsed_s"),
+                "front_clear": output_debug.get("recovery_front_clear"),
+                "exit_candidate": output_debug.get("recovery_exit_candidate"),
+                "block_reason": output_debug.get("recovery_block_reason"),
+                "timeout": output_debug.get("recovery_timeout"),
+                "unstick": output_debug.get("recovery_unstick"),
+                "turn_latch": output_debug.get("recovery_turn_latch"),
+                "gap_count": nav_debug.get("gap_count"),
+                "best_gap_center_deg": nav_debug.get("gap_center"),
+                "best_gap_width_deg": nav_debug.get("gap_width"),
+                "best_gap_score": nav_debug.get("gap_score"),
+                "best_gap_min_range_m": nav_debug.get("gap_min_range_m"),
+                "selected_gap_is_left": nav_debug.get("gap_selected_left"),
+                "selected_gap_is_right": nav_debug.get("gap_selected_right"),
+            }
             record = {
+                "record_schema": "reactive_nav_turn_recovery_v1",
+                "timestamp": self._json_float(time.time()),
+                "time_s": self._json_float(now),
                 "profile_name": self.profile_name,
                 "state": output.state,
                 "reason": output.reason,
                 "previous_state": self.last_state,
+                "state_duration_s": self._json_float(state_duration_s),
                 "scan_topic": self.current_scan_topic or None,
                 "scan_count": self.scan_count,
                 "image_count": self.image_count,
@@ -828,6 +857,9 @@ def run_ros_node(args=None) -> None:
                     "requested_angular_z": self._json_float(requested_command.angular_z),
                     "published_linear_x": self._json_float(published_command.linear_x),
                     "published_angular_z": self._json_float(published_command.angular_z),
+                    "request_changed_by_publication": (
+                        requested_command != published_command
+                    ),
                     "positive_angular_z_means": "left_turn",
                 },
                 "nav": {
@@ -839,9 +871,11 @@ def run_ros_node(args=None) -> None:
                     "debug": self._json_clean(nav_debug),
                 },
                 "arbiter_debug": self._json_clean(output_debug),
+                "recovery": self._json_clean(recovery_debug),
                 "turn": turn_debug,
                 "emergency": self._json_clean(emergency_debug),
                 "lidar": {
+                    "angle_offset_deg": self._json_float(self.lidar_yaw_offset_deg),
                     "valid_count": sectors.valid_count if sectors is not None else 0,
                     "total_count": sectors.total_count if sectors is not None else 0,
                     "sector_distance_m": sector_distances,

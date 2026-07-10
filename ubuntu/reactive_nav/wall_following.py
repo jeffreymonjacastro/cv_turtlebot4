@@ -212,6 +212,11 @@ class WallFollowNavigation:
                     "gap_end": gap.end_deg,
                     "gap_center": gap.center_deg,
                     "gap_width": gap.width_deg,
+                    "gap_score": gap.score,
+                    "gap_min_range_m": gap.min_distance_m,
+                    "gap_selected_left": gap.center_deg > 0.0,
+                    "gap_selected_right": gap.center_deg < 0.0,
+                    "gap_count": 1.0,
                     "front": front if front is not None else -1.0,
                     "recovery_turn_fallback": turn_fallback,
                 },
@@ -228,6 +233,11 @@ class WallFollowNavigation:
                 "left": turn_left_score,
                 "right": turn_right_score,
                 "front": front if front is not None else -1.0,
+                "gap_count": 0.0,
+                "gap_score": None,
+                "gap_min_range_m": None,
+                "gap_selected_left": None,
+                "gap_selected_right": None,
             },
         )
 
