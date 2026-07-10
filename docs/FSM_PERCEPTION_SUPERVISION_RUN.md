@@ -148,11 +148,11 @@ export ROS_DOMAIN_ID=2
 RUN_ID="$(date +%Y%m%d_%H%M%S)_fsm_only"
 RUN_DIR="/home/ubuntu/output/fsm_perception_runs/$RUN_ID"
 mkdir -p "$RUN_DIR/collision_frames"
-cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml "$RUN_DIR/profile.yaml"
+cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml "$RUN_DIR/profile.yaml"
 
 cd /home/ubuntu/reactive_nav_test
 python3 -B reactive_nav/reactive_navigator.py --ros-args \
-  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
@@ -472,11 +472,11 @@ export ROS_DOMAIN_ID=2
 RUN_ID="$(date +%Y%m%d_%H%M%S)_perception_only"
 RUN_DIR="/home/ubuntu/output/fsm_perception_runs/$RUN_ID"
 mkdir -p "$RUN_DIR/collision_frames"
-cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml "$RUN_DIR/profile.yaml"
+cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml "$RUN_DIR/profile.yaml"
 
 cd /home/ubuntu/reactive_nav_test
 python3 -B reactive_nav/reactive_navigator.py --ros-args \
-  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \
@@ -551,11 +551,11 @@ export ROS_DOMAIN_ID=2
 RUN_ID="$(date +%Y%m%d_%H%M%S)_integrated_stationary"
 RUN_DIR="/home/ubuntu/output/fsm_perception_runs/$RUN_ID"
 mkdir -p "$RUN_DIR/collision_frames"
-cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml "$RUN_DIR/profile.yaml"
+cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml "$RUN_DIR/profile.yaml"
 
 cd /home/ubuntu/reactive_nav_test
 python3 -B reactive_nav/reactive_navigator.py --ros-args \
-  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml \
   -p dry_run:=true \
   -p enable_motion:=false \
   -p publish_zero_in_dry_run:=true \

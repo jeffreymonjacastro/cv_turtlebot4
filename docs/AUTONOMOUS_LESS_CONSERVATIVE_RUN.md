@@ -1,4 +1,4 @@
-# Autonomous Run With `wall_follow_less_conservative`
+# Autonomous Run With `wall_follow_less_conservative_1`
 
 This is the direct run recipe for the main autonomous task using:
 
@@ -7,7 +7,7 @@ LiDAR reactive navigation
 + laptop YOLO symbolic signs
 + laptop ZXing QR checkpoints
 + robot priority-based behavior arbiter
-+ wall_follow_less_conservative profile
++ wall_follow_less_conservative_1 profile
 ```
 
 This is not a benchmark command. The final navigator command enables robot
@@ -98,6 +98,14 @@ output/perception_runs/<run_id>/laptop_perception.jsonl
 The camera overlay shows YOLO boxes plus QR status, payload, confirmation
 progress, decode variant, latency, and queue metrics.
 
+The laptop YOLO actionability gates default to the `_1` profile style:
+
+```text
+confidence >= 0.65
+bbox_area_ratio >= 0.02
+bbox_center_x_ratio between 0.10 and 0.90
+```
+
 ## 3. Laptop Terminal C: Sync YOLO and QR to the Robot
 
 ```bash
@@ -136,11 +144,11 @@ export ROS_DOMAIN_ID=2
 RUN_ID="$(date +%Y%m%d_%H%M%S)_wall_follow_less_conservative_autonomous"
 RUN_DIR="/home/ubuntu/output/autonomous_runs/$RUN_ID"
 mkdir -p "$RUN_DIR/collision_frames"
-cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml "$RUN_DIR/profile.yaml"
+cp /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml "$RUN_DIR/profile.yaml"
 
 cd /home/ubuntu/reactive_nav_test
 python3 -B reactive_nav/reactive_navigator.py --ros-args \
-  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --params-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative_1.yaml \
   -p dry_run:=false \
   -p enable_motion:=true \
   -p telemetry_port:=6612 \

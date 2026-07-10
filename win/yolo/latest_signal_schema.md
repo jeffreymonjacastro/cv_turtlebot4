@@ -63,10 +63,10 @@ The existing writer also includes useful diagnostics:
   "bbox_xyxy": [10, 20, 120, 180],
   "class_name": "left_arrow",
   "thresholds": {
-    "action_confidence": 0.9,
-    "action_min_area_ratio": 0.18,
-    "action_center_x_min": 0.25,
-    "action_center_x_max": 0.75,
+    "action_confidence": 0.65,
+    "action_min_area_ratio": 0.02,
+    "action_center_x_min": 0.10,
+    "action_center_x_max": 0.90,
     "stable_frames": 2
   }
 }
@@ -74,6 +74,17 @@ The existing writer also includes useful diagnostics:
 
 The robot-side reader uses these fields only for diagnostics and duplicate
 event IDs.
+
+`win/yolo/recibidor.py` defaults these actionability gates to the
+`wall_follow_less_conservative_1` profile style. Override them from the laptop
+only when measuring a deliberate variant:
+
+```bash
+YOLO_ACTION_CONF_THRESHOLD=0.65
+YOLO_ACTION_MIN_AREA_RATIO=0.02
+YOLO_ACTION_CENTER_X_MIN=0.10
+YOLO_ACTION_CENTER_X_MAX=0.90
+```
 
 ## QR Semantic Event
 
