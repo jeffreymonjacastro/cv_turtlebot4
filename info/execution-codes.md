@@ -23,6 +23,8 @@ python3 -B debug_image_udp_sender.py --ros-args -p port:=6610 -p image_topic:=/o
 
 ### Test YOLO
 
+#### Turtle
+
 cd ~/reactive
 python3 -B debug_image_udp_sender.py --ros-args \
  -p port:=6610 \
@@ -30,6 +32,20 @@ python3 -B debug_image_udp_sender.py --ros-args \
  -p jpeg_quality:=80 \
  -p send_hz:=5.0
 
-python3 win/yolo/recibidor.py 10.60.199.200
+python3 -B signal_udp_receiver.py \
+ --port 6611 \
+ --output /home/ubuntu/output/signals/latest_signal.json
 
-python3 win/reactive_nav/enviador_yolo.py --robot-ip 10.60.199.200 --port 6611
+#### Win
+
+python win/yolo/recibidor.py 10.60.199.200
+
+python win/reactive_nav/enviador_yolo.py --robot-ip 10.60.199.200 --port 6611
+
+#### ROS2
+
+watch -n 0.2 cat /home/ubuntu/output/signals/latest_signal.json
+
+ros2 service call /oakd/start_camera std_srvs/srv/Trigger "{}"
+
+ros2 topic hz /oakd/rgb/preview/image_raw
