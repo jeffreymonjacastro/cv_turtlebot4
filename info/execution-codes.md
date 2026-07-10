@@ -48,4 +48,4 @@ watch -n 0.2 cat /home/ubuntu/output/signals/latest_signal.json
 
 ros2 service call /oakd/start_camera std_srvs/srv/Trigger "{}"
 
-ros2 topic hz /oakd/rgb/preview/image_raw
+timeout 8 ros2 topic hz /oakd/rgb/preview/image_raw
