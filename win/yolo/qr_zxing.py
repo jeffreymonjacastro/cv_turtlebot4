@@ -16,6 +16,7 @@ DEFAULT_VARIANTS = (
     "gray",
     "clahe",
     "gray_2x",
+    "gray_3x",
     "clahe_2x",
     "sharpen",
     "center_80",
@@ -46,6 +47,8 @@ def _variants(image: np.ndarray, enabled: Iterable[str]) -> Iterable[tuple[str, 
         yield "clahe", clahe
     if "gray_2x" in enabled_set:
         yield "gray_2x", cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    if "gray_3x" in enabled_set:
+        yield "gray_3x", cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
     if "clahe_2x" in enabled_set:
         yield "clahe_2x", cv2.resize(clahe, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     if "sharpen" in enabled_set:
@@ -132,4 +135,3 @@ class ZXingQRDecoder:
             decode_latency_ms=(time.perf_counter() - started) * 1000.0,
             error=last_error,
         )
-

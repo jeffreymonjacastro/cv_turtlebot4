@@ -93,15 +93,18 @@ original
 gray
 CLAHE
 2x gray
+3x gray
 2x CLAHE
 mild sharpen
 center_80 crop
 inverted gray
 ```
 
-Rotations are disabled. A stage should stay in the promoted default only when
-the real dataset shows that it adds true decodes, adds no false positives, and
-keeps latency within budget.
+Rotations are disabled. `gray_3x` is included because the live TurtleBot QR
+sample from 2026-07-10 recovered frames that `gray_2x` missed while staying
+well inside the latency budget. A stage should stay in the promoted default
+only when the real dataset shows that it adds true decodes, adds no false
+positives, and keeps latency within budget.
 
 ## Validation
 
