@@ -13,7 +13,7 @@ python3 -B reactive_navigator.py --ros-args \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl
 ```
 
-python3 win/yolo/recibidor.py 10.60.199.200
+python3 win/yolo/recibidor.py <robot-ip>
 
 python3 ubuntu/reactive_nav/enviador_yolo.py
 

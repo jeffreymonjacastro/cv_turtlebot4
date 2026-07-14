@@ -29,8 +29,8 @@ class DebugImageUdpSender(Node):
         super().__init__("debug_image_udp_sender")
 
         self.declare_parameter("port", int(os.environ.get("YOLO_TELEMETRY_PORT", "6610")))
-        self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
-        self.declare_parameter("pairing_code", "ROBOT_A_2")
+        self.declare_parameter("robot_name", "turtlebot4")
+        self.declare_parameter("pairing_code", "ROBOT_PAIRING_CODE")
         self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
         self.declare_parameter("jpeg_quality", 80)
         self.declare_parameter(

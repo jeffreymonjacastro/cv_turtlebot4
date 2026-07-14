@@ -14,7 +14,7 @@ def test_decode_img_parts_preserves_timestamps_and_frame_id():
     packet = [
         "IMG",
         "2",
-        "turtlebot4_rensso_mora",
+        "turtlebot4",
         "123",
         "456000000",
         base64.b64encode(encoded.tobytes()).decode("ascii"),
@@ -25,7 +25,7 @@ def test_decode_img_parts_preserves_timestamps_and_frame_id():
 
     assert frame.image.shape[:2] == (12, 16)
     assert frame.domain_id == 2
-    assert frame.robot_name == "turtlebot4_rensso_mora"
+    assert frame.robot_name == "turtlebot4"
     assert frame.source_frame_time == "123.456000000"
-    assert frame.frame_id == "turtlebot4_rensso_mora:123.456000000"
+    assert frame.frame_id == "turtlebot4:123.456000000"
     assert frame.received_at == received_at

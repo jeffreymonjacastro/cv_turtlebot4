@@ -19,7 +19,7 @@ robot camera
 Run on the Mac:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 uv sync --locked
 uv run python -c "import importlib.metadata, zxingcpp; print(importlib.metadata.version('zxing-cpp'), zxingcpp.__file__)"
 uv run python -m pytest tests/
@@ -31,7 +31,7 @@ uv run python -B ubuntu/reactive_nav/reactive_navigator.py --self-test
 Run on the Mac:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 rsync -av ubuntu/reactive_nav/ turtlebot4:/home/ubuntu/reactive_nav_test/reactive_nav/
 rsync -av scripts/inject_perception_event.py scripts/perception_event_io.py scripts/supervise_perception_fsm.py scripts/summarize_perception_fsm_run.py \
   turtlebot4:/home/ubuntu/reactive_nav_test/scripts/
@@ -61,7 +61,7 @@ python3 -B reactive_nav/debug_image_udp_sender.py --ros-args \
 Mac terminal:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_qr_dataset"
 
 uv run python scripts/capture_qr_dataset.py \
@@ -82,7 +82,7 @@ uv run python scripts/capture_qr_dataset.py \
 For negatives, leave the sender running and run:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_qr_negative"
 
 uv run python scripts/capture_qr_dataset.py \
@@ -110,7 +110,7 @@ output/qr_zxing_dataset/<run_id>/
 Run on the Mac:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_qr_benchmark"
 MANIFEST="$(ls -t output/qr_zxing_dataset/*/manifest.jsonl | head -n 1)"
 
@@ -142,7 +142,7 @@ Robot sender remains running from phase 2.
 Mac terminal B:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_stationary_perception"
 mkdir -p "output/perception_runs/$RUN_ID"
 
@@ -155,7 +155,7 @@ uv run python win/yolo/recibidor.py \
 Mac terminal C:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(ls -td output/perception_runs/*_stationary_perception | head -n 1 | xargs basename)"
 
 uv run python win/reactive_nav/enviador_yolo.py \
@@ -171,7 +171,7 @@ uv run python win/reactive_nav/enviador_yolo.py \
 Check live files:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 tail -f output/perception_runs/*_stationary_perception/laptop_perception.jsonl
 tail -f output/perception_runs/*_stationary_perception/sync.jsonl
 ```
@@ -264,7 +264,7 @@ events should be rejected with explicit reasons.
 Mac terminal:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 mkdir -p output/fsm_perception_runs
 rsync -av turtlebot4:/home/ubuntu/output/fsm_perception_runs/ output/fsm_perception_runs/
 
@@ -300,7 +300,7 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/TwistStamped \
 Disable laptop QR but keep YOLO:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 uv run python win/yolo/recibidor.py
 uv run python win/reactive_nav/enviador_yolo.py \
   --robot turtlebot4 \

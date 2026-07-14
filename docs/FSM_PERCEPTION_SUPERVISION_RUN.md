@@ -50,7 +50,7 @@ That script sends movement commands directly and is not part of this workflow.
 From the Mac/local repo:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 
 rsync -av ubuntu/reactive_nav/ turtlebot4:/home/ubuntu/reactive_nav_test/reactive_nav/
 rsync -av scripts/inject_perception_event.py scripts/perception_event_io.py scripts/supervise_perception_fsm.py scripts/summarize_perception_fsm_run.py \
@@ -408,7 +408,7 @@ python3 -B reactive_nav/debug_image_udp_sender.py --ros-args \
 From the Mac/local repo:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_perception_only"
 mkdir -p "output/perception_runs/$RUN_ID"
 
@@ -442,7 +442,7 @@ stable frame count
 ## Laptop terminal C — sync YOLO and QR latest state to robot
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(ls -td output/perception_runs/*_perception_only | head -n 1 | xargs basename)"
 
 uv run python win/reactive_nav/enviador_yolo.py \
@@ -637,7 +637,7 @@ qr_event_status=duplicate:
 From the Mac/local repo:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 mkdir -p output/fsm_perception_runs
 rsync -av turtlebot4:/home/ubuntu/output/fsm_perception_runs/ output/fsm_perception_runs/
 ```

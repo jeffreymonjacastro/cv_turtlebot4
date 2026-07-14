@@ -97,13 +97,13 @@ ros2 pkg list | grep turtlebot4
 ## 5️⃣ Configurar y conectar al TurtleBot 4
 
 1. **Encender el robot**.
-2. Conéctate a su red Wi-Fi:
-   - **SSID:** `turtlebot4`
-   - **Contraseña:** `turtlebot4`
+2. Conéctate a la red de configuración del robot:
+   - **SSID:** `<robot-setup-ssid>`
+   - **Contraseña:** `<robot-setup-password>`
 3. Accede por SSH:
    ```bash
-   ssh ubuntu@10.42.0.1
-   # contraseña: turtlebot4
+   ssh <robot-user>@<robot-setup-ip>
+   # contraseña: <robot-password>
    ```
 4. Ejecuta el asistente de configuración:
    ```bash
@@ -111,8 +111,8 @@ ros2 pkg list | grep turtlebot4
    ```
    Completa los parámetros de Wi-Fi:
    ```
-   SSID: Lab_Computech_5G
-   Password: Computech2025!
+   SSID: <lab-wifi-ssid>
+   Password: <lab-wifi-password>
    ```
 5. Luego abre en un navegador:
    ```

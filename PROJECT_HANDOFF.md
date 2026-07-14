@@ -13,7 +13,7 @@ This repo contains TurtleBot4 lab scripts split by execution side:
 - `ubuntu/`: robot-side ROS 2 Jazzy nodes intended to run on the TurtleBot or an Ubuntu/WSL2 ROS environment.
 - `win/`: laptop-side Windows helpers for UDP telemetry, keyboard control, QR reception, YOLO signal detection, and receivers.
 - `kaggle/`: versioned Kaggle training artifacts for YOLO experiments.
-- `tutorial_turtlebot4.md` and `README.md`: local setup/run notes.
+- `archive/tutorial_turtlebot4_redacted.md` and `README.md`: local setup/run notes.
 
 The strongest project invariant is the platform and responsibility split. Do not merge robot-side ROS nodes with Windows laptop receivers unless explicitly asked. In particular, keep QR receiving separate from WASD control:
 
@@ -35,8 +35,8 @@ As of this handoff, the repo is on:
 There are local uncommitted changes. Treat them as user/current-session work and do not revert them casually:
 
 - `ubuntu/lidar/follow_the_gap_mixed.py`: adds automatic LaserScan topic discovery/switching and richer warning logs when no live scan arrives.
-- `win/yolo/enviador.py`: changes `ROBOT_IP` from `172.27.129.200` to `172.31.245.200`.
-- `win/yolo/recibidor.py`: changes `ROBOT_IP` from `172.27.129.200` to `172.31.245.200` and formats a detection label.
+- `win/yolo/enviador.py`: changes `ROBOT_IP` from `<robot-ip>` to `<robot-ip>`.
+- `win/yolo/recibidor.py`: changes `ROBOT_IP` from `<robot-ip>` to `<robot-ip>` and formats a detection label.
 
 Diff summary at handoff time:
 
@@ -65,9 +65,9 @@ Do not copy sensitive network credentials into new shared docs. Existing local d
 
 Common identity and pairing values used across scripts:
 
-- Robot name: `turtlebot4_rensso_mora`
+- Robot name: `<robot-name>`
 - ROS domain commonly used in scripts: `2`
-- Pairing code: `ROBOT_A_2`
+- Pairing code: `<pairing-code>`
 
 Ports:
 
@@ -99,7 +99,7 @@ LOG <domain_id> <robot_name> <level> <message...>
 Top-level:
 
 - `README.md`: lab-specific connection and control notes.
-- `tutorial_turtlebot4.md`: generated tutorial adapted to laptop-terminal usage instead of VM assumptions.
+- `archive/tutorial_turtlebot4_redacted.md`: generated tutorial adapted to laptop-terminal usage instead of VM assumptions.
 - `pyproject.toml`: Windows/laptop Python dependencies.
 - `.gitignore`: ignores `.venv/`, `output/`, `labels-gt/`, and `kaggle/**/outputs/`.
 - `carta_de_suicidio_turtlebot2025.txt`: original lab instruction source. Treat as local source context, but avoid propagating secrets.
@@ -235,7 +235,7 @@ The YOLO path is separate from the QR and LiDAR receiver paths:
 - `win/yolo/recibidor.py` loads a signal model, processes images, draws detections, and writes a latest-signal JSON/state file.
 - `win/yolo/enviador.py` reads the latest signal and sends movement commands.
 
-There are current uncommitted IP edits in both YOLO files from `172.27.129.200` to `172.31.245.200`. Verify the actual robot IP before changing it again.
+There are current uncommitted IP edits in both YOLO files from `<robot-ip>` to `<robot-ip>`. Verify the actual robot IP before changing it again.
 
 Kaggle memory indicates earlier work built versioned training artifacts and retrieved models/outputs. Keep outputs versioned under explicit folders and avoid committing generated output directories.
 
@@ -255,7 +255,7 @@ Main outcomes:
 
 Useful memory:
 
-- The receiver side expects `ACK 2 turtlebot4_rensso_mora` style traffic over UDP `6000`.
+- The receiver side expects `ACK 2 <robot-name>` style traffic over UDP `6000`.
 - A GUI/display error on the TurtleBot is a deployment-side mistake for laptop receiver scripts.
 
 ### 2026-06-02 - uv setup, tutorial, WSL2 mirrored networking
@@ -267,7 +267,7 @@ Main outcomes:
 - Created a `uv` Python environment and `pyproject.toml`.
 - Used Python 3.13 on Windows.
 - Added `numpy` and `opencv-python`, later `ultralytics` appears in the current `pyproject.toml`.
-- Created `tutorial_turtlebot4.md`.
+- Created `archive/tutorial_turtlebot4_redacted.md`.
 - Corrected docs away from VM assumptions because the user was using a laptop terminal.
 - Explained robot-side vs laptop-side Python files.
 - Recommended WSL2 mirrored networking for ROS 2 discovery.

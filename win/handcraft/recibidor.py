@@ -8,6 +8,7 @@
 # ============================================================
 import base64
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -16,12 +17,12 @@ import cv2
 import numpy as np
 
 # ========= Configuracion =========
-ROBOT_IP = "192.168.0.103"
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = 6000
 
-DESIRED_DOMAIN_ID = 2
-PAIRING_CODE = "ROBOT_A_2"
-EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
+DESIRED_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "2"))
+PAIRING_CODE = os.environ.get("PAIRING_CODE", "ROBOT_PAIRING_CODE")
+EXPECTED_ROBOT_NAME = os.environ.get("ROBOT_NAME", "turtlebot4")
 
 ARROW_SCORE_THRESHOLD = 0.65
 ARROW_STABLE_FRAMES = 2

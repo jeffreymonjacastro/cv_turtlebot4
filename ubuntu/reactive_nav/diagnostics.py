@@ -37,8 +37,8 @@ class UdpDiagnostics:
         *,
         enabled: bool = True,
         port: int = 6612,
-        robot_name: str = "turtlebot4_rensso_mora",
-        pairing_code: str = "ROBOT_A_2",
+        robot_name: str = "turtlebot4",
+        pairing_code: str = "ROBOT_PAIRING_CODE",
     ):
         self.logger = logger
         self.enabled = enabled

@@ -17,5 +17,8 @@ htmlcov/
 
 # Local Codex / robot access notes
 .codex/robot_access.local.md
+.env
+.env.*
+!.env.example
 .env.local
 robot_access.local.md

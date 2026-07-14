@@ -2,8 +2,9 @@ import socket
 import struct
 import time
 import msvcrt
+import os
 
-ROBOT_IP = "172.21.136.102"
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = 5007
 
 SEND_HZ = 60  # un poco más alto, igual tu receiver publica a 50Hz
