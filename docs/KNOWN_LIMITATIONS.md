@@ -28,7 +28,7 @@ This project is best read as an evidence-driven robotics prototype, not as a com
 
 - Robot-specific commands require local network configuration and ROS 2 setup.
 - Legacy scripts exist for historical reference and may not follow the current architecture.
-- Some generated evidence is ignored under `output/`; reviewers may need a separate artifact bundle to inspect raw logs.
+- Some generated evidence is ignored under `output/`; users may need a separate artifact bundle to inspect raw logs.
 - The repository previously contained lab credentials in legacy notes. Current docs use placeholders, but history should be treated as potentially exposed unless rewritten privately.
 
 ## Future work

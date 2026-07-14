@@ -198,12 +198,6 @@ See [docs/EVALUATION.md](docs/EVALUATION.md) for context, commands, and limitati
 - Offline replay is not physics, but it is valuable for preventing repeated regressions in safety and recovery choices.
 - The arbiter boundary is useful: perception and navigation can fail noisily without directly driving the wheels.
 
-## Scope, attribution, and contributions
-
-This was a team project. The repository documents system-level outcomes, experiments, and implementation artifacts; individual authorship should be verified through commit history and project records.
-
-For a cautious contribution summary, see [docs/MY_CONTRIBUTIONS.md](docs/MY_CONTRIBUTIONS.md). In CV/interview contexts, avoid claiming that one person independently built the entire system unless that is supported by the project record.
-
 ## Known limitations
 
 - Offline and replay success do not prove physical robot readiness.
@@ -214,19 +208,10 @@ For a cautious contribution summary, see [docs/MY_CONTRIBUTIONS.md](docs/MY_CONT
 
 See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
-## CV-ready summary
+## Future work
 
-One-line description:
-
-> Built and evaluated a safety-first TurtleBot 4 autonomy prototype combining YOLO sign perception, ZXing QR checkpoint events, LiDAR reactive navigation, and FSM-based behavior arbitration with offline replay and real-log diagnostics.
-
-Two truthful CV bullets:
-
-- Developed and evaluated a modular TurtleBot 4 perception/navigation stack with YOLO sign events, QR checkpoint logging, LiDAR sector processing, and priority-based behavior arbitration.
-- Built offline regression tooling for synthetic LiDAR scenarios, real-log failure analysis, turn/recovery interval replay, and perception-to-FSM validation, reducing reliance on ad hoc physical robot debugging.
-
-30-second interview explanation:
-
-> This project was a TurtleBot 4 autonomy stack for an indoor course. The interesting part was not just YOLO or LiDAR alone; it was integrating unreliable real-time perception with a safety-first arbiter. We split the system into laptop perception, robot-side LiDAR navigation modules, QR event logging, and a finite-state arbiter that owns `/cmd_vel`. A lot of the work went into diagnostics: JSONL logs, synthetic replay, real-log failure extraction, and benchmarks for signal and QR behavior. The main lesson was that physical robot failures are often interface and freshness bugs, so the stack needed evidence-driven iteration rather than one-off tuning.
-
-Likely interview questions are in [docs/MY_CONTRIBUTIONS.md](docs/MY_CONTRIBUTIONS.md).
+- Publish a curated, sanitized evidence bundle for the most important generated `output/` summaries.
+- Expand QR benchmarking with negative cases and harder real-camera geometry.
+- Add real-log-derived replay cases that include active turn states.
+- Improve recovery behavior in dead ends and spin-trap scenarios.
+- Add configuration validation before robot launch.

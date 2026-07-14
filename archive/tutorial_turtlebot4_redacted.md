@@ -1,6 +1,6 @@
 # Legacy TurtleBot Tutorial (Redacted)
 
-This archived note preserves the useful checklist shape of an older informal tutorial while removing credentials, private IPs, and casual language that is not appropriate for a portfolio repository.
+This archived note preserves the useful checklist shape of an older informal tutorial while removing credentials, private IPs, and casual language that is not appropriate for a public engineering repository.
 
 ## SSH and ROS domain
 

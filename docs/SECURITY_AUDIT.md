@@ -2,7 +2,7 @@
 
 Date: 2026-07-14
 
-This audit was performed as part of preparing the repository for portfolio review.
+This audit was performed as part of preparing the repository for public review.
 
 ## Scope
 
@@ -34,7 +34,7 @@ Sensitive or lab-specific values were found in legacy setup notes, including:
 
 The most important redactions were made in:
 
-- `README.md` rewritten with placeholders and portfolio-oriented content;
+- `README.md` rewritten with placeholders and project-oriented content;
 - `archive/legacy_turtlebot_setup_notes_redacted.md`;
 - `archive/tutorial_turtlebot4_redacted.md`;
 - `repo-cortijo/README.md` credential placeholders;
