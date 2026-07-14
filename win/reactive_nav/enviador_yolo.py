@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import time
@@ -25,9 +26,10 @@ DEFAULT_QR_SOURCE = REPO_ROOT / "output" / "signals" / "latest_qr_event.json"
 DEFAULT_QR_REMOTE_PATH = "/home/ubuntu/output/signals/latest_qr_event.json"
 
 
-def run_command(command: list[str], *, quiet: bool = False) -> bool:
+def run_command(command: list[str], *, quiet: bool = False, input_bytes: bytes | None = None) -> bool:
     result = subprocess.run(
         command,
+        input=input_bytes,
         stdout=subprocess.DEVNULL if quiet else None,
         stderr=subprocess.DEVNULL if quiet else None,
         check=False,
@@ -44,9 +46,16 @@ def copy_state_atomic(source: Path, robot: str, remote_path: str, *, quiet: bool
     """Copy to a remote temporary file, then atomically install it."""
 
     remote_tmp = f"{remote_path}.tmp.{os.getpid()}.{time.monotonic_ns()}"
-    if not run_command(["scp", "-q", str(source), f"{robot}:{remote_tmp}"], quiet=quiet):
+    try:
+        payload = source.read_bytes()
+    except OSError:
         return False
-    if run_command(["ssh", robot, "mv", remote_tmp, remote_path], quiet=quiet):
+
+    install_command = (
+        f"cat > {shlex.quote(remote_tmp)} && "
+        f"mv {shlex.quote(remote_tmp)} {shlex.quote(remote_path)}"
+    )
+    if run_command(["ssh", robot, install_command], quiet=quiet, input_bytes=payload):
         return True
     run_command(["ssh", robot, "rm", "-f", remote_tmp], quiet=True)
     return False
@@ -146,14 +155,16 @@ def main() -> int:
 
             changed = stat.st_mtime_ns != last_mtime_ns[kind]
             if changed or args.copy_every_interval:
-                copied_at = time.time()
+                copy_started_at = time.time()
                 success = copy_state_atomic(local_path, args.robot, remote_path, quiet=args.quiet)
+                copied_at = time.time()
                 record = {
                     "timestamp": copied_at,
                     "kind": kind,
                     "source": str(local_path),
                     "remote_path": remote_path,
                     "source_age_s": max(0.0, copied_at - stat.st_mtime),
+                    "transfer_duration_s": max(0.0, copied_at - copy_started_at),
                     "success": success,
                 }
                 if kind == "qr":

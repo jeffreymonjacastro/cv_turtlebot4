@@ -35,10 +35,10 @@ EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
 
 # ========= YOLO =========
 CONF_THRESHOLD = 0.30
-ACTION_CONF_THRESHOLD = float(os.environ.get("YOLO_ACTION_CONF_THRESHOLD", "0.65"))
-ACTION_MIN_AREA_RATIO = float(os.environ.get("YOLO_ACTION_MIN_AREA_RATIO", "0.02"))
-ACTION_CENTER_X_MIN = float(os.environ.get("YOLO_ACTION_CENTER_X_MIN", "0.10"))
-ACTION_CENTER_X_MAX = float(os.environ.get("YOLO_ACTION_CENTER_X_MAX", "0.90"))
+ACTION_CONF_THRESHOLD = float(os.environ.get("YOLO_ACTION_CONF_THRESHOLD", "0.30"))
+ACTION_MIN_AREA_RATIO = float(os.environ.get("YOLO_ACTION_MIN_AREA_RATIO", "0.01"))
+ACTION_CENTER_X_MIN = float(os.environ.get("YOLO_ACTION_CENTER_X_MIN", "0.03"))
+ACTION_CENTER_X_MAX = float(os.environ.get("YOLO_ACTION_CENTER_X_MAX", "0.97"))
 IMG_SIZE = 640
 SIGNAL_CHECK_EVERY_N_FRAMES = 1
 STABLE_SIGNAL_FRAMES = 2
@@ -525,11 +525,11 @@ def parse_args():
     parser.add_argument("--enable-qr", action="store_true", help="Enable isolated laptop ZXing QR processing.")
     parser.add_argument("--qr-event-path", default=str(LATEST_QR_EVENT_PATH), help="Validated QR semantic state path.")
     parser.add_argument("--perception-log", default=None, help="Optional combined laptop perception JSONL log.")
-    parser.add_argument("--qr-max-hz", type=float, default=2.0)
+    parser.add_argument("--qr-max-hz", type=float, default=5.0)
     parser.add_argument("--qr-max-frame-age-s", type=float, default=0.5)
-    parser.add_argument("--qr-confirm-count", type=int, default=2)
+    parser.add_argument("--qr-confirm-count", type=int, default=1)
     parser.add_argument("--qr-confirm-window-s", type=float, default=1.2)
-    parser.add_argument("--qr-duplicate-cooldown-s", type=float, default=30.0)
+    parser.add_argument("--qr-duplicate-cooldown-s", type=float, default=10.0)
     parser.add_argument(
         "--qr-variants",
         default=",".join(DEFAULT_VARIANTS),

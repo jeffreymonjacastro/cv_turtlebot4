@@ -87,15 +87,20 @@ def read_signal_state(
     center_x = float(payload.get("bbox_center_x_ratio") or payload.get("center_x_ratio") or 0.5)
     stale = age > max_age_s
 
+    robot_actionable = (
+        direction in ("left", "right", "stop")
+        and confidence >= min_confidence
+        and area_ratio >= min_area_ratio
+        and center_min <= center_x <= center_max
+    )
     if "actionable" in payload:
-        actionable = bool(payload.get("actionable"))
+        # The laptop writes this as an early filter, but the robot-side profile
+        # owns the final actionability gates. This lets a deliberately relaxed
+        # robot profile recover from a laptop process launched with older,
+        # stricter thresholds while preserving the arbiter/safety boundary.
+        actionable = bool(payload.get("actionable")) or robot_actionable
     else:
-        actionable = (
-            direction in ("left", "right", "stop")
-            and confidence >= min_confidence
-            and area_ratio >= min_area_ratio
-            and center_min <= center_x <= center_max
-        )
+        actionable = robot_actionable
 
     event_id = (
         f"{direction}:"

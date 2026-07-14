@@ -48,16 +48,20 @@
     align_stable_cycles: 3
     align_same_direction_only: true
 
-    sign_confirm_window: 4
+    max_signal_age_s: 3.0
+    sign_confirm_window: 7
     sign_confirm_count: 2
-    sign_min_confidence: 0.65
-    sign_min_area_ratio: 0.02
+    sign_min_confidence: 0.30
+    sign_min_area_ratio: 0.01
+    sign_center_x_min: 0.03
+    sign_center_x_max: 0.97
     sign_cooldown_s: 3.0
 
     enable_qr_events: true
     enable_external_qr_events: true
     enable_qr_detection: false
     qr_injection_path: /home/ubuntu/output/signals/latest_qr_event.json
+    max_qr_injection_age_s: 5.0
     max_external_qr_source_frame_age_s: 0.5
     qr_check_every_n_frames: 1
     qr_confirm_count: 1

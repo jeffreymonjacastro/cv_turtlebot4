@@ -34,6 +34,36 @@ def test_signal_state_uses_file_mtime_when_payload_timestamp_is_stale(tmp_path):
     assert signal.reason == "fresh"
 
 
+def test_signal_state_robot_profile_can_relax_laptop_actionable_flag(tmp_path):
+    path = tmp_path / "latest_signal.json"
+    path.write_text(
+        json.dumps(
+            {
+                "direction": "left",
+                "confidence": 0.42,
+                "bbox_area_ratio": 0.015,
+                "bbox_center_x_ratio": 0.05,
+                "actionable": False,
+                "timestamp": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    signal = read_signal_state(
+        path,
+        max_age_s=3.0,
+        min_confidence=0.30,
+        min_area_ratio=0.01,
+        center_min=0.03,
+        center_max=0.97,
+    )
+
+    assert signal.direction == "left"
+    assert signal.actionable is True
+    assert signal.stale is False
+
+
 def test_validated_qr_envelope_is_fresh_and_normalized(tmp_path):
     path = tmp_path / "latest_qr_event.json"
     path.write_text(

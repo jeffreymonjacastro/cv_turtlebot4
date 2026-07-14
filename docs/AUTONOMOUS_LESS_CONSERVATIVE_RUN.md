@@ -83,6 +83,9 @@ mkdir -p "output/perception_runs/$RUN_ID"
 
 uv run python win/yolo/recibidor.py \
   --enable-qr \
+  --qr-max-hz 5.0 \
+  --qr-confirm-count 1 \
+  --qr-duplicate-cooldown-s 10.0 \
   --qr-event-path output/signals/latest_qr_event.json \
   --perception-log "output/perception_runs/$RUN_ID/laptop_perception.jsonl"
 ```
@@ -101,9 +104,9 @@ progress, decode variant, latency, and queue metrics.
 The laptop YOLO actionability gates default to the `_1` profile style:
 
 ```text
-confidence >= 0.65
-bbox_area_ratio >= 0.02
-bbox_center_x_ratio between 0.10 and 0.90
+confidence >= 0.30
+bbox_area_ratio >= 0.01
+bbox_center_x_ratio between 0.03 and 0.97
 ```
 
 ## 3. Laptop Terminal C: Sync YOLO and QR to the Robot
@@ -157,6 +160,12 @@ python3 -B reactive_nav/reactive_navigator.py --ros-args \
   -p enable_external_qr_events:=true \
   -p enable_qr_detection:=false \
   -p qr_injection_path:=/home/ubuntu/output/signals/latest_qr_event.json \
+  -p max_signal_age_s:=3.0 \
+  -p sign_min_confidence:=0.30 \
+  -p sign_min_area_ratio:=0.01 \
+  -p sign_center_x_min:=0.03 \
+  -p sign_center_x_max:=0.97 \
+  -p max_qr_injection_age_s:=5.0 \
   -p max_external_qr_source_frame_age_s:=0.5 \
   -p qr_log_path:="$RUN_DIR/qr_log.jsonl" \
   -p persistent_log_path:="$RUN_DIR/reactive_nav_debug.jsonl" \
