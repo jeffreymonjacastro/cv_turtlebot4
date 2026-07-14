@@ -4,7 +4,7 @@ import socket
 import sys
 
 ROBOT_IP = os.environ.get("ROBOT_IP", "192.168.0.103")
-ROBOT_PORT = int(os.environ.get("ROBOT_PORT", "6000"))
+ROBOT_PORT = int(os.environ.get("ROBOT_PORT", os.environ.get("REACTIVE_NAV_TELEMETRY_PORT", "6612")))
 DESIRED_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "2"))
 PAIRING_CODE = os.environ.get("PAIRING_CODE", "ROBOT_A_2")
 EXPECTED_ROBOT_NAME = os.environ.get("ROBOT_NAME", "turtlebot4_rensso_mora")

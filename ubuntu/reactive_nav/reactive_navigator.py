@@ -20,14 +20,16 @@ from typing import Any, Dict, Optional
 try:
     from .behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState, SignDebouncer
     from .diagnostics import DiagnosticSnapshot, PersistentJsonlLogger, UdpDiagnostics
-    from .lidar_sectors import SectorMap, extract_sectors, traversable_gaps
+    from .lidar_sectors import SectorMap, extract_sectors
+    from .qr_detection import decode_qr_image
     from .qr_logger import QRLogger
     from .turn_controller import TurnController
     from .wall_following import NavigationObservation, TwistCommand, create_navigation_module
 except ImportError:  # pragma: no cover - direct script fallback
     from behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState, SignDebouncer
     from diagnostics import DiagnosticSnapshot, PersistentJsonlLogger, UdpDiagnostics
-    from lidar_sectors import SectorMap, extract_sectors, traversable_gaps
+    from lidar_sectors import SectorMap, extract_sectors
+    from qr_detection import decode_qr_image
     from qr_logger import QRLogger
     from turn_controller import TurnController
     from wall_following import NavigationObservation, TwistCommand, create_navigation_module
@@ -73,40 +75,195 @@ def read_signal_state(
         return SignalState(reason=f"read_error:{exc}")
 
     timestamp = float(payload.get("timestamp") or 0.0)
-    age = time.time() - timestamp if timestamp > 0.0 else math.inf
+    wall_now = time.time()
+    mtime = path.stat().st_mtime
+    timestamp_age = wall_now - timestamp if timestamp > 0.0 else math.inf
+    mtime_age = wall_now - mtime if mtime > 0.0 else math.inf
+    age = min(timestamp_age, mtime_age)
     direction = _normalize_signal_direction(payload)
+    raw_class = str(payload.get("class_name") or payload.get("label") or payload.get("direction") or direction)
     confidence = float(payload.get("confidence") or 0.0)
     area_ratio = float(payload.get("bbox_area_ratio") or payload.get("area_ratio") or 0.0)
     center_x = float(payload.get("bbox_center_x_ratio") or payload.get("center_x_ratio") or 0.5)
     stale = age > max_age_s
 
+    robot_actionable = (
+        direction in ("left", "right", "stop")
+        and confidence >= min_confidence
+        and area_ratio >= min_area_ratio
+        and center_min <= center_x <= center_max
+    )
     if "actionable" in payload:
-        actionable = bool(payload.get("actionable"))
+        # The laptop writes this as an early filter, but the robot-side profile
+        # owns the final actionability gates. This lets a deliberately relaxed
+        # robot profile recover from a laptop process launched with older,
+        # stricter thresholds while preserving the arbiter/safety boundary.
+        actionable = bool(payload.get("actionable")) or robot_actionable
     else:
-        actionable = (
-            direction in ("left", "right", "stop")
-            and confidence >= min_confidence
-            and area_ratio >= min_area_ratio
-            and center_min <= center_x <= center_max
-        )
+        actionable = robot_actionable
 
     event_id = (
         f"{direction}:"
         f"{payload.get('source_frame_time')}:{timestamp:.6f}:"
         f"{payload.get('bbox_xyxy') or payload.get('bbox')}"
     )
-    reason = "fresh" if not stale else f"stale:{age:.2f}s"
+    freshness_source = "mtime" if mtime_age < timestamp_age else "timestamp"
+    reason = "fresh" if not stale else f"stale:{age:.2f}s/{freshness_source}"
+    signal_timestamp = wall_now - age if math.isfinite(age) else timestamp
     return SignalState(
         direction=direction,
         confidence=confidence,
         bbox_area_ratio=area_ratio,
         bbox_center_x_ratio=center_x,
         actionable=actionable,
-        timestamp=timestamp,
+        timestamp=signal_timestamp,
         stale=stale,
         event_id=event_id,
         reason=reason,
+        raw_class=raw_class,
     )
+
+
+def read_injected_qr_event(
+    path: str | Path,
+    *,
+    max_age_s: float,
+    max_source_frame_age_s: float = 0.5,
+) -> Dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "missing",
+            "qr_event": "NONE",
+            "qr_event_status": "idle",
+            "qr_rejection_reason": "missing",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "read_error",
+            "qr_event": "NONE",
+            "qr_event_status": "rejected",
+            "qr_rejection_reason": f"read_error:{exc}",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+
+    if not isinstance(payload, dict):
+        return {
+            "raw_qr_payload": None,
+            "qr_decode_status": "read_error",
+            "qr_event": "NONE",
+            "qr_event_status": "rejected",
+            "qr_rejection_reason": "payload_not_object",
+            "fresh": False,
+            "event_id": "",
+            "source": "injection_file",
+        }
+    raw_source_frame_age = payload.get("source_frame_age_s")
+    try:
+        timestamp = float(payload.get("timestamp") or 0.0)
+        source_frame_age_s = float(raw_source_frame_age) if raw_source_frame_age is not None else math.inf
+    except (TypeError, ValueError):
+        timestamp = 0.0
+        source_frame_age_s = math.inf
+    age = time.time() - timestamp if timestamp > 0.0 else math.inf
+    raw_content = payload.get("qr_content") or payload.get("payload") or payload.get("content")
+    content = QRLogger.normalize_content(raw_content) or ""
+    schema_version = str(payload.get("schema_version") or "legacy_qr_event")
+    is_semantic_event = schema_version != "legacy_qr_event"
+    stale = age > max_age_s
+    validation_status = str(payload.get("validation_status") or "")
+    if raw_content is not None and not content:
+        status = "rejected"
+        reason = "invalid_payload"
+    elif not content:
+        status = "idle" if not payload else "rejected"
+        reason = "empty_payload"
+    elif is_semantic_event and schema_version != "qr_semantic_event_v1":
+        status = "rejected"
+        reason = f"unsupported_schema:{schema_version}"
+    elif is_semantic_event and validation_status != "validated":
+        status = "rejected"
+        reason = "event_not_validated"
+    elif is_semantic_event and raw_source_frame_age is None:
+        status = "rejected"
+        reason = "missing_source_frame_age"
+    elif is_semantic_event and source_frame_age_s > max_source_frame_age_s:
+        status = "rejected"
+        reason = f"stale_source_frame:{source_frame_age_s:.2f}s"
+    elif stale:
+        status = "rejected"
+        reason = f"stale:{age:.2f}s"
+    else:
+        status = "candidate"
+        reason = "fresh"
+    return {
+        "raw_qr_payload": content or None,
+        "qr_decode_status": "decoded" if content else "empty",
+        "qr_event": content or "NONE",
+        "qr_event_status": status,
+        "qr_rejection_reason": reason if status == "rejected" else "none",
+        "fresh": status == "candidate",
+        "age_s": age if math.isfinite(age) else None,
+        "event_id": str(payload.get("event_id") or f"qr:{content}:{timestamp:.6f}"),
+        "source": str(payload.get("source") or "injection_file"),
+        "confidence": payload.get("confidence"),
+        "schema_version": schema_version,
+        "is_semantic_event": is_semantic_event,
+        "validation_status": validation_status,
+        "source_frame_time": payload.get("source_frame_time"),
+        "source_received_at": payload.get("source_received_at"),
+        "source_frame_age_s": source_frame_age_s if math.isfinite(source_frame_age_s) else None,
+        "raw_qr_content": payload.get("raw_qr_content"),
+        "barcode_format": payload.get("barcode_format"),
+        "decode_variant": payload.get("decode_variant"),
+        "decode_latency_ms": payload.get("decode_latency_ms"),
+        "corners": payload.get("corners") or [],
+        "confirmation_count": payload.get("confirmation_count"),
+        "confirmation_window_s": payload.get("confirmation_window_s"),
+    }
+
+
+def load_profile_parameters(path: str | Path) -> Dict[str, Any]:
+    """Load the flat ros__parameters block from a simple ROS YAML profile."""
+
+    profile_path = Path(path)
+    parameters: Dict[str, Any] = {}
+    inside_ros_parameters = False
+    for raw_line in profile_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if line.strip() == "ros__parameters:":
+            inside_ros_parameters = True
+            continue
+        if not inside_ros_parameters:
+            continue
+        if not raw_line.startswith("    ") or ":" not in line:
+            continue
+        key, value = line.strip().split(":", 1)
+        parsed = value.strip()
+        if not parsed:
+            continue
+        lowered = parsed.lower()
+        if lowered in ("true", "false"):
+            parameters[key] = lowered == "true"
+            continue
+        try:
+            numeric = float(parsed)
+        except ValueError:
+            parameters[key] = parsed.strip("'\"")
+            continue
+        parameters[key] = int(numeric) if numeric.is_integer() else numeric
+    return parameters
 
 
 def run_ros_node(args=None) -> None:
@@ -125,46 +282,67 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("scan_topic", "")
             self.declare_parameter("auto_discover_scan", True)
             self.declare_parameter("cmd_topic", "/cmd_vel")
-            self.declare_parameter("cmd_msg_type", "auto")
+            self.declare_parameter("cmd_msg_type", "TwistStamped")
+            self.declare_parameter("lidar_yaw_offset_deg", 90.0)
+            self.declare_parameter("sector_robust_percentile", 0.10)
             self.declare_parameter("dry_run", True)
             self.declare_parameter("enable_motion", False)
             self.declare_parameter("publish_zero_in_dry_run", True)
             self.declare_parameter("control_hz", 15.0)
-            self.declare_parameter("max_scan_age_s", 1.00)
-            self.declare_parameter("nav_module", "forward_avoid")
+            self.declare_parameter("max_scan_age_s", 0.50)
+            self.declare_parameter("profile_name", "wall_follow_safe")
+            self.declare_parameter("nav_module", "wall_follow")
 
-            self.declare_parameter("base_speed", 0.14)
-            self.declare_parameter("narrow_speed", 0.08)
+            self.declare_parameter("base_speed", 0.13)
+            self.declare_parameter("narrow_speed", 0.07)
+            self.declare_parameter("turn_slow_speed", 0.08)
+            self.declare_parameter("turn_slow_yaw_threshold", 0.24)
             self.declare_parameter("max_yaw", 0.65)
-            self.declare_parameter("cruise_yaw_limit", 0.35)
-            self.declare_parameter("evasive_yaw_limit", 0.38)
-            self.declare_parameter("wall_kp", 0.22)
-            self.declare_parameter("wall_kd", 0.02)
-            self.declare_parameter("balance_deadband_m", 0.18)
-            self.declare_parameter("soft_avoid_distance", 0.58)
-            self.declare_parameter("soft_avoid_gain", 0.75)
-            self.declare_parameter("curve_heading_gain", 0.55)
-            self.declare_parameter("reverse_turn_cooldown_s", 2.0)
-            self.declare_parameter("robot_width_m", 0.36)
-            self.declare_parameter("robot_length_m", 0.35)
-            self.declare_parameter("footprint_margin_m", 0.08)
-            self.declare_parameter("footprint_lookahead_m", 0.85)
-            self.declare_parameter("footprint_slow_distance", 0.70)
-            self.declare_parameter("path_forward_heading_tolerance_deg", 12.0)
-            self.declare_parameter("path_required_clearance_m", 0.85)
-            self.declare_parameter("drive_heading_limit_deg", 38.0)
-            self.declare_parameter("search_turn_yaw", 0.32)
-            self.declare_parameter("search_clear_confirm_cycles", 3)
-            self.declare_parameter("local_path_heading_deg", 50.0)
-            self.declare_parameter("local_path_step_deg", 10.0)
-            self.declare_parameter("front_clear_distance", 0.55)
+            self.declare_parameter("wall_kp", 0.45)
+            self.declare_parameter("wall_kd", 0.04)
+            self.declare_parameter("front_clear_distance", 0.50)
             self.declare_parameter("recovery_clearance", 0.42)
+            self.declare_parameter("corner_slow_speed", 0.055)
+            self.declare_parameter("side_avoid_distance", 0.29)
+            self.declare_parameter("front_corner_avoid_distance", 0.56)
+            self.declare_parameter("avoidance_gain", 0.65)
+            self.declare_parameter("enable_corner_yaw_veto", True)
+            self.declare_parameter("enable_corner_slowdown", True)
+            self.declare_parameter("enable_side_yaw_veto", True)
+            self.declare_parameter("enable_anti_spin", False)
+            self.declare_parameter("anti_spin_yaw_threshold", 0.42)
+            self.declare_parameter("anti_spin_linear_threshold", 0.025)
+            self.declare_parameter("anti_spin_trigger_cycles", 8)
+            self.declare_parameter("anti_spin_recovery_speed", 0.035)
+            self.declare_parameter("angular_smoothing_alpha", 1.0)
+            self.declare_parameter("gap_bubble_radius_m", 0.30)
+            self.declare_parameter("gap_min_width_deg", 18.0)
+            self.declare_parameter("gap_search_min_deg", -120.0)
+            self.declare_parameter("gap_search_max_deg", 120.0)
+            self.declare_parameter("gap_heading_scale_deg", 75.0)
+            self.declare_parameter("gap_distance_score_cap_m", 3.0)
+            self.declare_parameter("gap_forward_cone_deg", 18.0)
+            self.declare_parameter("robot_width_m", 0.36)
+            self.declare_parameter("gap_side_margin_m", 0.08)
+            self.declare_parameter("focm_alpha", 40.0)
+            self.declare_parameter("focm_goal_heading_deg", 0.0)
 
-            self.declare_parameter("front_stop_distance", 0.32)
+            self.declare_parameter("front_stop_distance", 0.28)
+            self.declare_parameter("front_stop_clear_distance", 0.36)
             self.declare_parameter("side_stop_distance", 0.14)
-            self.declare_parameter("slow_distance", 0.55)
+            self.declare_parameter("side_stop_clear_distance", 0.20)
+            self.declare_parameter("emergency_clear_cycles", 3)
+            self.declare_parameter("slow_distance", 0.48)
             self.declare_parameter("turn_clearance", 0.42)
             self.declare_parameter("turn_speed", 0.45)
+            self.declare_parameter("turn_degrees", 90.0)
+            self.declare_parameter("settle_seconds", 0.25)
+            self.declare_parameter("align_max_seconds", 1.6)
+            self.declare_parameter("align_yaw_limit", 0.28)
+            self.declare_parameter("align_gain", 0.45)
+            self.declare_parameter("align_error_threshold", 0.08)
+            self.declare_parameter("align_stable_cycles", 3)
+            self.declare_parameter("align_same_direction_only", True)
 
             self.declare_parameter("signal_state_path", "output/signals/latest_signal.json")
             self.declare_parameter("max_signal_age_s", 0.8)
@@ -176,30 +354,44 @@ def run_ros_node(args=None) -> None:
             self.declare_parameter("sign_center_x_max", 0.80)
             self.declare_parameter("sign_cooldown_s", 3.0)
 
+            self.declare_parameter("enable_qr_events", True)
             self.declare_parameter("enable_qr_detection", True)
+            self.declare_parameter("enable_external_qr_events", False)
             self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
             self.declare_parameter("max_image_age_s", 1.5)
             self.declare_parameter("qr_check_every_n_frames", 5)
             self.declare_parameter("qr_log_path", "output/qr_log.jsonl")
             self.declare_parameter("qr_confirm_count", 2)
+            self.declare_parameter("qr_injection_path", "output/qr_injection.json")
+            self.declare_parameter("max_qr_injection_age_s", 2.0)
+            self.declare_parameter("max_external_qr_source_frame_age_s", 0.5)
 
             self.declare_parameter("telemetry_enabled", True)
-            self.declare_parameter("telemetry_port", 6000)
+            self.declare_parameter("telemetry_port", 6612)
             self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
             self.declare_parameter("pairing_code", "ROBOT_A_2")
             self.declare_parameter("diagnostic_period_s", 0.5)
             self.declare_parameter("persistent_log_enabled", True)
             self.declare_parameter("persistent_log_path", "output/reactive_nav_debug.jsonl")
             self.declare_parameter("persistent_log_period_s", 0.10)
+            self.declare_parameter("collision_logging_enabled", True)
+            self.declare_parameter("hazard_topic", "/hazard_detection")
+            self.declare_parameter("collision_log_path", "output/collision_events.jsonl")
+            self.declare_parameter("collision_image_dir", "output/collision_frames")
+            self.declare_parameter("collision_cooldown_s", 2.0)
 
             self.scan_topic = self._param_str("scan_topic")
             self.auto_discover_scan = self._param_bool("auto_discover_scan")
             self.cmd_topic = self._param_str("cmd_topic")
             self.cmd_msg_type = self._param_str("cmd_msg_type").lower()
+            self.lidar_yaw_offset_deg = self._param_float("lidar_yaw_offset_deg")
+            self.sector_robust_percentile = self._param_float("sector_robust_percentile")
             self.dry_run = self._param_bool("dry_run")
             self.enable_motion = self._param_bool("enable_motion")
             self.publish_zero_in_dry_run = self._param_bool("publish_zero_in_dry_run")
             self.max_scan_age_s = self._param_float("max_scan_age_s")
+            self.profile_name = self._param_str("profile_name")
+            self.nav_module_name = self._param_str("nav_module")
             self.signal_state_path = Path(self._param_str("signal_state_path"))
             self.max_signal_age_s = self._param_float("max_signal_age_s")
             self.max_image_age_s = self._param_float("max_image_age_s")
@@ -213,49 +405,66 @@ def run_ros_node(args=None) -> None:
             self.current_scan_topic = ""
 
             self.last_image_time: Optional[float] = None
+            self.latest_image_msg = None
             self.image_count = 0
             self.qr_frame_counter = 0
             self.last_qr_time = 0.0
+            self.last_qr_duplicate_log_time = 0.0
+            self.consumed_external_qr_event_ids: set[str] = set()
+            self.last_qr_supervision: Dict[str, Any] = {
+                "raw_qr_payload": None,
+                "qr_decode_status": "not_checked",
+                "qr_confirmation_progress": "0/0",
+                "qr_event": "NONE",
+                "qr_event_status": "idle",
+                "qr_rejection_reason": "none",
+                "qr_source": "none",
+            }
             self.qr_detector = None
             self.bridge = None
             self.image_sub = None
+            self.hazard_sub = None
+            self.last_collision_log_time = 0.0
 
             self.last_signal = SignalState()
+            self.last_requested_command = TwistCommand()
+            self.last_published_command = TwistCommand()
+            self.last_motion_enabled = False
             self.last_loop_time = time.monotonic()
             self.last_diag_time = 0.0
             self.last_persistent_log_time = 0.0
             self.last_state = ""
             self.last_reason = ""
+            self.state_started_at = time.monotonic()
             self._last_scan_discovery_log = 0.0
-            self._last_cmd_status_log = 0.0
-            self._cmd_subscriber_seen = False
-            self._search_turn_sign = 0.0
-            self._search_clear_cycles = 0
-            self._last_motion_turn_sign = 0.0
-            self._last_motion_turn_time = 0.0
 
             nav_kwargs = {
                 "base_speed": self._param_float("base_speed"),
                 "narrow_speed": self._param_float("narrow_speed"),
-                "max_yaw": min(self._param_float("max_yaw"), self._param_float("cruise_yaw_limit")),
+                "turn_slow_speed": self._param_float("turn_slow_speed"),
+                "turn_slow_yaw_threshold": self._param_float("turn_slow_yaw_threshold"),
+                "max_yaw": self._param_float("max_yaw"),
                 "kp": self._param_float("wall_kp"),
                 "kd": self._param_float("wall_kd"),
                 "front_clear_distance": self._param_float("front_clear_distance"),
+                "slow_distance": self._param_float("slow_distance"),
                 "recovery_clearance": self._param_float("recovery_clearance"),
-                "balance_deadband": self._param_float("balance_deadband_m"),
-                "soft_avoid_distance": self._param_float("soft_avoid_distance"),
-                "soft_avoid_gain": self._param_float("soft_avoid_gain"),
-                "curve_heading_gain": self._param_float("curve_heading_gain"),
-                "reverse_turn_cooldown_s": self._param_float("reverse_turn_cooldown_s"),
+                "side_avoid_distance": self._param_float("side_avoid_distance"),
+                "front_corner_avoid_distance": self._param_float("front_corner_avoid_distance"),
+                "avoidance_gain": self._param_float("avoidance_gain"),
+                "gap_bubble_radius_m": self._param_float("gap_bubble_radius_m"),
+                "gap_min_width_deg": self._param_float("gap_min_width_deg"),
+                "gap_search_min_deg": self._param_float("gap_search_min_deg"),
+                "gap_search_max_deg": self._param_float("gap_search_max_deg"),
+                "gap_heading_scale_deg": self._param_float("gap_heading_scale_deg"),
+                "gap_distance_score_cap_m": self._param_float("gap_distance_score_cap_m"),
+                "gap_forward_cone_deg": self._param_float("gap_forward_cone_deg"),
                 "robot_width_m": self._param_float("robot_width_m"),
-                "footprint_margin_m": self._param_float("footprint_margin_m"),
-                "footprint_lookahead_m": self._param_float("footprint_lookahead_m"),
-                "path_forward_heading_tolerance_deg": self._param_float("path_forward_heading_tolerance_deg"),
-                "drive_heading_limit_deg": self._param_float("drive_heading_limit_deg"),
-                "local_path_heading_deg": self._param_float("local_path_heading_deg"),
-                "local_path_step_deg": self._param_float("local_path_step_deg"),
+                "gap_side_margin_m": self._param_float("gap_side_margin_m"),
+                "focm_alpha": self._param_float("focm_alpha"),
+                "focm_goal_heading_deg": self._param_float("focm_goal_heading_deg"),
             }
-            self.nav_module = create_navigation_module(self._param_str("nav_module"), **nav_kwargs)
+            self.nav_module = create_navigation_module(self.nav_module_name, **nav_kwargs)
 
             signs = SignDebouncer(
                 confirm_window=self._param_int("sign_confirm_window"),
@@ -264,11 +473,36 @@ def run_ros_node(args=None) -> None:
                 min_area_ratio=self._param_float("sign_min_area_ratio"),
                 cooldown_s=self._param_float("sign_cooldown_s"),
             )
-            turns = TurnController(turn_speed=self._param_float("turn_speed"))
+            turns = TurnController(
+                turn_speed=self._param_float("turn_speed"),
+                turn_degrees=self._param_float("turn_degrees"),
+                settle_seconds=self._param_float("settle_seconds"),
+                align_max_seconds=self._param_float("align_max_seconds"),
+                align_yaw_limit=self._param_float("align_yaw_limit"),
+                align_gain=self._param_float("align_gain"),
+                align_error_threshold=self._param_float("align_error_threshold"),
+                align_stable_cycles=self._param_int("align_stable_cycles"),
+                align_same_direction_only=self._param_bool("align_same_direction_only"),
+            )
+            self.turn_controller = turns
             self.arbiter = BehaviorArbiter(
                 front_stop_distance=self._param_float("front_stop_distance"),
+                front_stop_clear_distance=self._param_float("front_stop_clear_distance"),
                 side_stop_distance=self._param_float("side_stop_distance"),
+                side_stop_clear_distance=self._param_float("side_stop_clear_distance"),
+                emergency_clear_cycles=self._param_int("emergency_clear_cycles"),
                 slow_distance=self._param_float("slow_distance"),
+                front_corner_avoid_distance=self._param_float("front_corner_avoid_distance"),
+                corner_slow_speed=self._param_float("corner_slow_speed"),
+                enable_corner_yaw_veto=self._param_bool("enable_corner_yaw_veto"),
+                enable_corner_slowdown=self._param_bool("enable_corner_slowdown"),
+                enable_side_yaw_veto=self._param_bool("enable_side_yaw_veto"),
+                enable_anti_spin=self._param_bool("enable_anti_spin"),
+                anti_spin_yaw_threshold=self._param_float("anti_spin_yaw_threshold"),
+                anti_spin_linear_threshold=self._param_float("anti_spin_linear_threshold"),
+                anti_spin_trigger_cycles=self._param_int("anti_spin_trigger_cycles"),
+                anti_spin_recovery_speed=self._param_float("anti_spin_recovery_speed"),
+                angular_smoothing_alpha=self._param_float("angular_smoothing_alpha"),
                 turn_clearance=self._param_float("turn_clearance"),
                 sign_debouncer=signs,
                 turn_controller=turns,
@@ -290,25 +524,32 @@ def run_ros_node(args=None) -> None:
                 enabled=self._param_bool("persistent_log_enabled"),
             )
             self.persistent_log_period_s = max(0.0, self._param_float("persistent_log_period_s"))
+            self.collision_logger = PersistentJsonlLogger(
+                self._param_str("collision_log_path"),
+                enabled=self._param_bool("collision_logging_enabled"),
+            )
+            self.collision_image_dir = Path(self._param_str("collision_image_dir"))
+            self.collision_cooldown_s = max(0.0, self._param_float("collision_cooldown_s"))
 
-            self._cmd_message_kind = self._select_cmd_message_kind()
-            if self._cmd_message_kind == "Twist":
+            if self.cmd_msg_type in ("twist", "geometry_msgs/msg/twist"):
                 self.cmd_pub = self.create_publisher(Twist, self.cmd_topic, 10)
+                self._cmd_message_kind = "Twist"
             else:
                 self.cmd_pub = self.create_publisher(TwistStamped, self.cmd_topic, 10)
                 self._cmd_message_kind = "TwistStamped"
 
             self._init_qr_subscription(Image, qos_profile_sensor_data)
+            self._init_collision_subscription(qos_profile_sensor_data)
             self._ensure_scan_subscription(LaserScan, qos_profile_sensor_data, force=True)
 
             period = 1.0 / max(1.0, self._param_float("control_hz"))
             self.timer = self.create_timer(period, self.control_loop)
-            self.cmd_status_timer = self.create_timer(2.0, self._cmd_status_check)
             self.diag.log(
                 "INFO",
                 "[INIT] reactive navigator started "
                 f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
-                f"cmd={self._cmd_message_kind}:{self.cmd_topic} nav={self.nav_module.name} "
+                f"cmd={self._cmd_message_kind}:{self.cmd_topic} profile={self.profile_name} nav={self.nav_module.name} "
+                f"lidar_yaw_offset_deg={self.lidar_yaw_offset_deg:.1f} "
                 f"log={self._param_str('persistent_log_path') if self._param_bool('persistent_log_enabled') else 'disabled'}",
             )
 
@@ -324,59 +565,12 @@ def run_ros_node(args=None) -> None:
         def _param_float(self, name: str) -> float:
             return float(self.get_parameter(name).value)
 
-        def _select_cmd_message_kind(self) -> str:
-            requested = self.cmd_msg_type.strip().lower()
-            if requested in ("twist", "geometry_msgs/msg/twist"):
-                return "Twist"
-            if requested in ("twiststamped", "twist_stamped", "geometry_msgs/msg/twiststamped"):
-                return "TwistStamped"
-            if requested != "auto":
-                self.get_logger().warn(f"[CMD] unknown cmd_msg_type={self.cmd_msg_type!r}; falling back to auto")
-
-            topic_types = self._topic_types(self.cmd_topic)
-            if "geometry_msgs/msg/Twist" in topic_types:
-                return "Twist"
-            if "geometry_msgs/msg/TwistStamped" in topic_types:
-                return "TwistStamped"
-            self.get_logger().warn(
-                f"[CMD] could not auto-detect message type for {self.cmd_topic}; "
-                "defaulting to TwistStamped. If the robot does not move, run with -p cmd_msg_type:=Twist"
-            )
-            return "TwistStamped"
-
-        def _topic_types(self, topic: str) -> list[str]:
-            for name, types in self.get_topic_names_and_types():
-                if name == topic:
-                    return list(types)
-            return []
-
-        def _cmd_status_check(self) -> None:
-            sub_count = self.cmd_pub.get_subscription_count()
-            topic_types = self._topic_types(self.cmd_topic)
-            if sub_count > 0:
-                if not self._cmd_subscriber_seen:
-                    self.diag.log(
-                        "INFO",
-                        f"[CMD] {self.cmd_topic} has subscribers={sub_count}; "
-                        f"publishing={self._cmd_message_kind}; graph_types={topic_types or 'unknown'}",
-                    )
-                self._cmd_subscriber_seen = True
-                return
-
-            now = time.monotonic()
-            if now - self._last_cmd_status_log < 2.0:
-                return
-            self._last_cmd_status_log = now
-            self.diag.log(
-                "WARN",
-                f"[CMD] no subscribers detected on {self.cmd_topic}; "
-                f"publishing={self._cmd_message_kind}; graph_types={topic_types or 'unknown'}. "
-                "The base will not receive velocity commands.",
-            )
-
         def _init_qr_subscription(self, ImageMsg, qos_profile) -> None:
-            if not self._param_bool("enable_qr_detection"):
-                self.diag.log("INFO", "[QR] local QR detection disabled by parameter")
+            qr_events_enabled = self._param_bool("enable_qr_events")
+            local_qr_enabled = qr_events_enabled and self._param_bool("enable_qr_detection")
+            camera_cache_needed = self._param_bool("collision_logging_enabled")
+            if not local_qr_enabled and not camera_cache_needed:
+                self.diag.log("INFO", "[CAMERA] subscription disabled; local QR and collision cache are off")
                 return
             try:
                 import cv2
@@ -387,7 +581,7 @@ def run_ros_node(args=None) -> None:
 
             image_topic = self._param_str("image_topic")
             self.bridge = CvBridge()
-            self.qr_detector = cv2.QRCodeDetector()
+            self.qr_detector = cv2.QRCodeDetector() if local_qr_enabled else None
             self.image_sub = self.create_subscription(
                 ImageMsg,
                 image_topic,
@@ -397,7 +591,31 @@ def run_ros_node(args=None) -> None:
             pub_count = len(self.get_publishers_info_by_topic(image_topic))
             self.diag.log(
                 "INFO",
-                f"[QR] subscribed image_topic={image_topic} publishers={pub_count}",
+                f"[CAMERA] subscribed image_topic={image_topic} publishers={pub_count} "
+                f"local_qr_decode={local_qr_enabled} collision_cache={camera_cache_needed}",
+            )
+
+        def _init_collision_subscription(self, qos_profile) -> None:
+            if not self._param_bool("collision_logging_enabled"):
+                self.diag.log("INFO", "[COLLISION] event logging disabled by parameter")
+                return
+            try:
+                from irobot_create_msgs.msg import HazardDetectionVector
+            except ImportError as exc:
+                self.diag.log("WARN", f"[COLLISION] irobot_create_msgs unavailable; hazard logging disabled: {exc}")
+                return
+
+            hazard_topic = self._param_str("hazard_topic")
+            self.hazard_sub = self.create_subscription(
+                HazardDetectionVector,
+                hazard_topic,
+                self.hazard_callback,
+                qos_profile,
+            )
+            pub_count = len(self.get_publishers_info_by_topic(hazard_topic))
+            self.diag.log(
+                "INFO",
+                f"[COLLISION] subscribed hazard_topic={hazard_topic} publishers={pub_count}",
             )
 
         def _laser_scan_topics(self) -> list[str]:
@@ -464,10 +682,15 @@ def run_ros_node(args=None) -> None:
             self.latest_scan = msg
             self.last_scan_time = time.monotonic()
             self.scan_count += 1
-            self.latest_sectors = extract_sectors(msg)
+            self.latest_sectors = extract_sectors(
+                msg,
+                angle_offset_deg=self.lidar_yaw_offset_deg,
+                robust_percentile=self.sector_robust_percentile,
+            )
 
         def image_callback(self, msg) -> None:
             self.last_image_time = time.monotonic()
+            self.latest_image_msg = msg
             self.image_count += 1
             self.qr_frame_counter += 1
             if self.qr_detector is None or self.bridge is None:
@@ -477,11 +700,36 @@ def run_ros_node(args=None) -> None:
                 return
             try:
                 cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-                content, _, _ = self.qr_detector.detectAndDecode(cv_img)
+                result = decode_qr_image(self.qr_detector, cv_img)
+                if not result.content:
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": None,
+                        "qr_decode_status": result.status,
+                        "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                        "qr_event": "NONE",
+                        "qr_event_status": "idle",
+                        "qr_rejection_reason": result.status,
+                        "qr_source": "camera",
+                        "qr_decode_variant": result.variant,
+                        "qr_detected_count": result.detected_count,
+                        "qr_decode_error": result.error,
+                    }
+                    return
+                content = result.content
+                qr_decode_status = result.status
+                qr_decode_variant = result.variant
+                qr_detected_count = result.detected_count
             except Exception as exc:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": None,
+                    "qr_decode_status": "decode_error",
+                    "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                    "qr_event": "NONE",
+                    "qr_event_status": "rejected",
+                    "qr_rejection_reason": f"decode_error:{exc}",
+                    "qr_source": "camera",
+                }
                 self.diag.log("WARN", f"[QR] decode error: {exc}")
-                return
-            if not content:
                 return
 
             context = self._distance_context()
@@ -492,13 +740,119 @@ def run_ros_node(args=None) -> None:
                 robot_state=self.last_state,
                 context=context,
             )
+            progress = self.qr_logger.confirmation_progress(content)
             if event is None:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": qr_decode_status,
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "candidate",
+                    "qr_rejection_reason": "awaiting_confirmation",
+                    "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
+                }
                 return
-            self.last_qr_time = time.monotonic()
             if event.logged:
+                self.last_qr_time = time.monotonic()
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": qr_decode_status,
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "accepted",
+                    "qr_rejection_reason": "none",
+                    "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
+                }
                 self.diag.log("INFO", f"[QR] logged content={event.content!r} path={event.path}")
             elif event.duplicate:
-                self.diag.log("INFO", f"[QR] duplicate ignored content={event.content!r}")
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": qr_decode_status,
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "duplicate",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": "camera",
+                    "qr_decode_variant": qr_decode_variant,
+                    "qr_detected_count": qr_detected_count,
+                }
+                now = time.monotonic()
+                if now - self.last_qr_duplicate_log_time >= 5.0:
+                    self.last_qr_duplicate_log_time = now
+                    self.diag.log("INFO", f"[QR] duplicate ignored content={event.content!r}")
+
+        def _valid_qr_points(self, points) -> bool:
+            if points is None:
+                return False
+            try:
+                raw = points.reshape(-1, 2)
+            except Exception:
+                return False
+            if len(raw) < 4:
+                return False
+            area = 0.0
+            for idx, point in enumerate(raw):
+                nxt = raw[(idx + 1) % len(raw)]
+                area += float(point[0]) * float(nxt[1]) - float(nxt[0]) * float(point[1])
+            return abs(area) * 0.5 > 1.0
+
+        def hazard_callback(self, msg) -> None:
+            detections = list(getattr(msg, "detections", []) or [])
+            if not detections:
+                return
+
+            now = time.monotonic()
+            if now - self.last_collision_log_time < self.collision_cooldown_s:
+                return
+            self.last_collision_log_time = now
+
+            image_path = self._save_collision_frame()
+            hazard_payload = self._ros_message_to_dict(msg)
+            sectors = self.latest_sectors
+            record = {
+                "event": "hazard_detection",
+                "hazard_topic": self._param_str("hazard_topic"),
+                "hazard": self._json_clean(hazard_payload),
+                "detection_count": len(detections),
+                "state": self.last_state,
+                "reason": self.last_reason,
+                "scan_topic": self.current_scan_topic or None,
+                "scan_count": self.scan_count,
+                "image_count": self.image_count,
+                "freshness": {
+                    "lidar_age_s": self._json_float(math.inf if self.last_scan_time is None else now - self.last_scan_time),
+                    "image_age_s": self._json_float(math.inf if self.last_image_time is None else now - self.last_image_time),
+                    "signal_stale": self.last_signal.stale,
+                },
+                "command": {
+                    "last_requested_linear_x": self._json_float(self.last_requested_command.linear_x),
+                    "last_requested_angular_z": self._json_float(self.last_requested_command.angular_z),
+                    "last_published_linear_x": self._json_float(self.last_published_command.linear_x),
+                    "last_published_angular_z": self._json_float(self.last_published_command.angular_z),
+                    "motion_enabled_last_cycle": self.last_motion_enabled,
+                    "positive_angular_z_means": "left_turn",
+                },
+                "lidar": self._collision_lidar_snapshot(sectors),
+                "signal": {
+                    "direction": self.last_signal.direction,
+                    "confidence": self._json_float(self.last_signal.confidence),
+                    "bbox_area_ratio": self._json_float(self.last_signal.bbox_area_ratio),
+                    "bbox_center_x_ratio": self._json_float(self.last_signal.bbox_center_x_ratio),
+                    "stale": self.last_signal.stale,
+                    "reason": self.last_signal.reason,
+                },
+                "camera_frame_path": image_path,
+            }
+            self.collision_logger.write(record)
+            self.diag.log(
+                "WARN",
+                f"[COLLISION] hazard event logged detections={len(detections)} "
+                f"log={self._param_str('collision_log_path')} image={image_path or 'none'}",
+            )
 
         def _read_signal(self) -> SignalState:
             return read_signal_state(
@@ -509,6 +863,146 @@ def run_ros_node(args=None) -> None:
                 center_min=self._param_float("sign_center_x_min"),
                 center_max=self._param_float("sign_center_x_max"),
             )
+
+        def _process_injected_qr(self) -> None:
+            if not self._param_bool("enable_qr_events"):
+                self.last_qr_supervision = {
+                    "raw_qr_payload": None,
+                    "qr_decode_status": "disabled",
+                    "qr_confirmation_progress": "0/0",
+                    "qr_event": "NONE",
+                    "qr_event_status": "disabled",
+                    "qr_rejection_reason": "qr_events_disabled",
+                    "qr_source": "external_event_file",
+                }
+                return
+            if not self._param_bool("enable_external_qr_events"):
+                return
+            payload = read_injected_qr_event(
+                self._param_str("qr_injection_path"),
+                max_age_s=self._param_float("max_qr_injection_age_s"),
+                max_source_frame_age_s=self._param_float("max_external_qr_source_frame_age_s"),
+            )
+            metadata = {
+                "qr_event_id": payload.get("event_id"),
+                "qr_event_schema": payload.get("schema_version"),
+                "qr_validation_status": payload.get("validation_status"),
+                "qr_source_frame_time": payload.get("source_frame_time"),
+                "qr_source_frame_age_s": payload.get("source_frame_age_s"),
+                "qr_decode_variant": payload.get("decode_variant"),
+                "qr_decode_latency_ms": payload.get("decode_latency_ms"),
+                "qr_barcode_format": payload.get("barcode_format"),
+                "qr_corners": payload.get("corners") or [],
+            }
+            if not payload.get("fresh"):
+                if payload.get("qr_decode_status") not in ("missing", "empty"):
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": payload.get("raw_qr_payload"),
+                        "qr_decode_status": payload.get("qr_decode_status"),
+                        "qr_confirmation_progress": "0/{}".format(self.qr_logger.confirm_count),
+                        "qr_event": payload.get("qr_event", "NONE"),
+                        "qr_event_status": payload.get("qr_event_status", "rejected"),
+                        "qr_rejection_reason": payload.get("qr_rejection_reason", "not_fresh"),
+                        "qr_source": payload.get("source", "injection_file"),
+                        "raw_qr_age_s": payload.get("age_s"),
+                        **metadata,
+                    }
+                return
+
+            content = str(payload.get("raw_qr_payload") or "")
+            event_id = str(payload.get("event_id") or "")
+            if payload.get("is_semantic_event"):
+                if event_id in self.consumed_external_qr_event_ids:
+                    self.last_qr_supervision = {
+                        "raw_qr_payload": content,
+                        "qr_decode_status": "decoded",
+                        "qr_confirmation_progress": "validated_laptop",
+                        "qr_event": content,
+                        "qr_event_status": "duplicate_event",
+                        "qr_rejection_reason": "event_id_already_consumed",
+                        "qr_source": payload.get("source", "laptop_zxing"),
+                        "raw_qr_age_s": payload.get("age_s"),
+                        **metadata,
+                    }
+                    return
+                event = self.qr_logger.record_validated(
+                    content,
+                    source=str(payload.get("source") or "laptop_zxing"),
+                    event_id=event_id,
+                    raw_content=payload.get("raw_qr_content"),
+                    source_frame_time=payload.get("source_frame_time"),
+                    robot_state=self.last_state,
+                    barcode_format=payload.get("barcode_format"),
+                    decode_variant=payload.get("decode_variant"),
+                    decode_latency_ms=payload.get("decode_latency_ms"),
+                    corners=payload.get("corners"),
+                    context=self._distance_context(),
+                )
+                self.consumed_external_qr_event_ids.add(event_id)
+                if len(self.consumed_external_qr_event_ids) > 128:
+                    self.consumed_external_qr_event_ids = set(list(self.consumed_external_qr_event_ids)[-64:])
+                progress = "validated_laptop"
+            else:
+                event = self.qr_logger.observe(
+                    content,
+                    source=str(payload.get("source") or "injection_file"),
+                    frame_id=event_id,
+                    robot_state=self.last_state,
+                    confidence=payload.get("confidence"),
+                    context=self._distance_context(),
+                )
+                progress = self.qr_logger.confirmation_progress(content)
+            if event is None:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "candidate",
+                    "qr_rejection_reason": "awaiting_confirmation",
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
+                }
+                return
+            if event.logged:
+                self.last_qr_time = time.monotonic()
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "accepted",
+                    "qr_rejection_reason": "none",
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
+                }
+                self.diag.log("INFO", f"[QR] external event accepted id={event_id} content={content!r}")
+            elif event.duplicate:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "duplicate",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
+                }
+            else:
+                self.last_qr_supervision = {
+                    "raw_qr_payload": content,
+                    "qr_decode_status": payload.get("qr_decode_status", "decoded"),
+                    "qr_confirmation_progress": progress,
+                    "qr_event": content,
+                    "qr_event_status": "rejected",
+                    "qr_rejection_reason": event.reason,
+                    "qr_source": payload.get("source", "injection_file"),
+                    "raw_qr_age_s": payload.get("age_s"),
+                    **metadata,
+                }
 
         def control_loop(self) -> None:
             from sensor_msgs.msg import LaserScan
@@ -521,6 +1015,7 @@ def run_ros_node(args=None) -> None:
 
             signal = self._read_signal()
             self.last_signal = signal
+            self._process_injected_qr()
             sectors = self.latest_sectors
             lidar_age = math.inf if self.last_scan_time is None else now - self.last_scan_time
             lidar_fresh = lidar_age <= self.max_scan_age_s
@@ -539,14 +1034,14 @@ def run_ros_node(args=None) -> None:
                     now=now,
                 )
             )
-            safe_command, safety_reason = self._adaptive_safety_command(
-                output.command,
-                sectors,
-                lidar_fresh,
-                state=output.state,
-                reason=output.reason,
-            )
-            published_command, motion_enabled = self._publish_command(safe_command, output.publish_motion)
+            state_changed = output.state != self.last_state
+            if state_changed:
+                self.state_started_at = now
+            state_duration_s = max(0.0, now - self.state_started_at)
+            published_command, motion_enabled = self._publish_command(output.command, output.publish_motion)
+            self.last_requested_command = output.command
+            self.last_published_command = published_command
+            self.last_motion_enabled = motion_enabled
             self._write_persistent_log(
                 output=output,
                 sectors=sectors,
@@ -555,448 +1050,15 @@ def run_ros_node(args=None) -> None:
                 signal=signal,
                 nav_suggestion=nav_suggestion,
                 requested_command=output.command,
-                safety_command=safe_command,
-                safety_reason=safety_reason,
                 published_command=published_command,
                 motion_enabled=motion_enabled,
                 dt=dt,
+                now=now,
+                state_duration_s=state_duration_s,
             )
-            self._emit_diagnostics(
-                output,
-                sectors,
-                lidar_age,
-                safe_command,
-                safety_reason,
-                published_command,
-                motion_enabled,
-            )
+            self._emit_diagnostics(output, sectors, lidar_age)
             self.last_state = output.state
             self.last_reason = output.reason
-
-        def _adaptive_safety_command(
-            self,
-            command: TwistCommand,
-            sectors: Optional[SectorMap],
-            lidar_fresh: bool,
-            *,
-            state: str = "",
-            reason: str = "",
-        ) -> tuple[TwistCommand, str]:
-            if sectors is None or not lidar_fresh:
-                return TwistCommand(), "NO_FRESH_LIDAR"
-            if sectors.valid_count == 0:
-                return TwistCommand(), "NO_VALID_LIDAR_POINTS"
-            if state in ("MANUAL_STOP", "QR_SCAN", "SENSOR_CHECK", "IDLE"):
-                return TwistCommand(), f"LOCKED_{state}"
-
-            front = sectors.distance("front")
-            front_center = sectors.distance("front_center")
-            front_left = sectors.distance("front_left")
-            front_right = sectors.distance("front_right")
-            left = sectors.distance("left")
-            right = sectors.distance("right")
-
-            if front is None and front_center is None:
-                return TwistCommand(), "NO_FRONT_LIDAR_POINTS"
-
-            stop_d = self._param_float("front_stop_distance")
-            side_stop_d = self._param_float("side_stop_distance")
-            slow_d = self._param_float("slow_distance")
-            turn_clearance = self._param_float("turn_clearance")
-            max_yaw = abs(self._param_float("max_yaw"))
-            cruise_yaw = min(max_yaw, abs(self._param_float("cruise_yaw_limit")))
-            evasive_yaw = min(max_yaw, abs(self._param_float("evasive_yaw_limit")))
-            soft_avoid_distance = max(slow_d, self._param_float("soft_avoid_distance"))
-            soft_avoid_gain = max(0.0, self._param_float("soft_avoid_gain"))
-            footprint = self._footprint_map(sectors)
-            local_path = self._local_path_map(sectors)
-            traversable_gap = self._best_traversable_gap(sectors)
-            footprint_lane = footprint["lane_nearest_x"]
-            footprint_left = footprint["left_clearance"]
-            footprint_right = footprint["right_clearance"]
-            footprint_turn = 1.0 if footprint_left >= footprint_right else -1.0
-            footprint_slow = max(slow_d, self._param_float("footprint_slow_distance"))
-            path_tolerance = max(3.0, self._param_float("path_forward_heading_tolerance_deg"))
-            drive_heading_limit = max(path_tolerance, self._param_float("drive_heading_limit_deg"))
-            path_required = max(
-                self._param_float("path_required_clearance_m"),
-                self._param_float("footprint_lookahead_m"),
-            )
-            search_yaw = min(evasive_yaw, abs(self._param_float("search_turn_yaw")))
-            search_confirm_cycles = max(1, self._param_int("search_clear_confirm_cycles"))
-            base_speed = max(0.0, self._param_float("base_speed"))
-            narrow_speed = max(0.0, self._param_float("narrow_speed"))
-
-            front_value = front if front is not None else front_center
-            front_center_value = front_center if front_center is not None else front_value
-            nearest_front = min(front_value, front_center_value)
-
-            left_score = self._clearance_score(left, front_left)
-            right_score = self._clearance_score(right, front_right)
-            preferred_turn = 1.0 if left_score >= right_score else -1.0
-            preferred_score = max(left_score, right_score)
-
-            left_critical = left is not None and left < side_stop_d
-            right_critical = right is not None and right < side_stop_d
-            if state == "EMERGENCY_STOP":
-                if "LIDAR_STALE" in reason or "NO_VALID" in reason:
-                    return TwistCommand(), f"LOCKED_{reason}"
-                if left_critical and right_critical:
-                    return TwistCommand(), "EMERGENCY_BOTH_SIDES_TOO_CLOSE"
-                if left_critical:
-                    return TwistCommand(0.0, -evasive_yaw), "EMERGENCY_LEFT_SIDE_STEER_RIGHT"
-                if right_critical:
-                    return TwistCommand(0.0, evasive_yaw), "EMERGENCY_RIGHT_SIDE_STEER_LEFT"
-
-            linear = max(0.0, min(float(command.linear_x), base_speed))
-            yaw_limit = max_yaw if state.startswith(("TURNING_", "ALIGNING_")) else cruise_yaw
-            yaw = max(-yaw_limit, min(yaw_limit, float(command.angular_z)))
-
-            straight_path_ready = (
-                local_path["straight_clearance_m"] >= path_required
-                and nearest_front >= slow_d
-                and (footprint_lane is None or footprint_lane >= footprint_slow)
-            )
-            drive_heading = self._drive_heading(local_path, traversable_gap, drive_heading_limit=drive_heading_limit)
-            diagonal_path_ready = (
-                abs(drive_heading) <= drive_heading_limit
-                and local_path["best_clearance_m"] >= min(path_required, footprint_slow)
-                and nearest_front >= stop_d + 0.08
-                and (footprint_lane is None or footprint_lane >= stop_d + 0.08)
-            )
-            front_gap_ready = traversable_gap is not None and abs(traversable_gap.center_deg) <= path_tolerance
-            path_ready = straight_path_ready or diagonal_path_ready or front_gap_ready
-            search_needed = (
-                not path_ready
-                and (
-                    traversable_gap is None
-                    or (not diagonal_path_ready and abs(traversable_gap.center_deg) > drive_heading_limit)
-                    or local_path["best_clearance_m"] < path_required
-                    or local_path["straight_clearance_m"] < path_required
-                )
-            )
-            if search_needed or self._search_turn_sign != 0.0:
-                if path_ready:
-                    self._search_clear_cycles += 1
-                    if self._search_clear_cycles >= search_confirm_cycles:
-                        self._search_turn_sign = 0.0
-                        self._search_clear_cycles = 0
-                    else:
-                        sign = self._search_turn_sign or footprint_turn
-                        return TwistCommand(0.0, sign * search_yaw), "SEARCH_CONFIRMING_CLEAR_PATH"
-                else:
-                    self._search_clear_cycles = 0
-                    if traversable_gap is not None and abs(traversable_gap.center_deg) > drive_heading_limit:
-                        self._search_turn_sign = 1.0 if traversable_gap.center_deg > 0.0 else -1.0
-                        return (
-                            TwistCommand(0.0, self._search_turn_sign * search_yaw),
-                            "SEGMENTED_GAP_TURN_IN_PLACE",
-                        )
-                    if self._search_turn_sign == 0.0:
-                        best_heading = float(local_path.get("best_heading_deg") or 0.0)
-                        self._search_turn_sign = (
-                            1.0 if best_heading > 1.0 else -1.0 if best_heading < -1.0 else footprint_turn
-                        )
-                    return TwistCommand(0.0, self._search_turn_sign * search_yaw), "NO_TRAVERSABLE_GAP_SEARCH_TURN"
-
-            if nearest_front < stop_d:
-                if preferred_score < turn_clearance:
-                    return TwistCommand(), "BLOCKED_ALL_SIDES"
-                return TwistCommand(0.0, preferred_turn * evasive_yaw), "CRITICAL_FRONT_TURN_TO_OPEN_SIDE"
-
-            if footprint_lane is not None and footprint_lane < stop_d:
-                if max(footprint_left, footprint_right) < turn_clearance:
-                    return TwistCommand(), "FOOTPRINT_PATH_BLOCKED"
-                steer = self._local_path_steer_yaw(local_path, yaw_limit=evasive_yaw, fallback=footprint_turn)
-                return TwistCommand(0.0, steer), "FOOTPRINT_STOP_TURN_TO_CLEAR_SIDE"
-
-            if left_critical and right_critical:
-                return TwistCommand(), "BOTH_SIDES_TOO_CLOSE"
-            if left_critical:
-                return TwistCommand(0.0, -evasive_yaw), "LEFT_CRITICAL_STEER_RIGHT"
-            if right_critical:
-                return TwistCommand(0.0, evasive_yaw), "RIGHT_CRITICAL_STEER_LEFT"
-
-            if footprint_lane is not None and footprint_lane < footprint_slow:
-                steer = self._local_path_steer_yaw(local_path, yaw_limit=evasive_yaw, fallback=footprint_turn)
-                return (
-                    TwistCommand(narrow_speed, steer),
-                    "FOOTPRINT_PATH_RISK_SLOW_STEER",
-                )
-
-            if local_path["straight_clearance_m"] < self._param_float("footprint_lookahead_m"):
-                steer = self._heading_to_yaw(drive_heading, yaw_limit=cruise_yaw)
-                straight_is_usable = (
-                    abs(drive_heading) <= drive_heading_limit
-                    and local_path["straight_clearance_m"] >= min(path_required, footprint_slow)
-                )
-                speed = narrow_speed if straight_is_usable or diagonal_path_ready else 0.0
-                return (
-                    TwistCommand(speed, steer),
-                    "DRIVE_DIAGONAL_TO_OPEN_SPACE" if speed > 0.0 else "LOCAL_PATH_SELECT_HEADING",
-                )
-
-            if nearest_front < slow_d:
-                slow_yaw = yaw
-                if abs(slow_yaw) < 0.10:
-                    slow_yaw = preferred_turn * min(evasive_yaw, 0.25)
-                else:
-                    slow_yaw = max(-evasive_yaw, min(evasive_yaw, slow_yaw))
-                return (
-                    TwistCommand(narrow_speed, slow_yaw),
-                    "FRONT_CLOSE_SLOW_TURN_TO_OPEN_SIDE",
-                )
-
-            reason = "NORMAL_ADAPTIVE"
-            if not state.startswith(("TURNING_", "ALIGNING_")):
-                soft_yaw = self._soft_obstacle_yaw(
-                    front_left=front_left,
-                    front_right=front_right,
-                    left=left,
-                    right=right,
-                    soft_distance=soft_avoid_distance,
-                    gain=soft_avoid_gain,
-                    yaw_limit=cruise_yaw,
-                )
-                if abs(soft_yaw) > 0.02:
-                    curve_yaw = self._curve_heading_yaw(
-                        traversable_gap,
-                        soft_yaw=soft_yaw,
-                        yaw_limit=cruise_yaw,
-                    )
-                    yaw = self._avoid_reverse_turn(soft_yaw + curve_yaw, yaw_limit=cruise_yaw)
-                    linear = min(linear, base_speed)
-                    reason = "FRONT_CLEAR_ADAPTIVE_CURVE_STEER"
-                elif footprint["side_bias"] != 0.0:
-                    yaw = self._avoid_reverse_turn(
-                        self._local_path_steer_yaw(local_path, yaw_limit=cruise_yaw, fallback=footprint_turn),
-                        yaw_limit=cruise_yaw,
-                    )
-                    reason = "LOCAL_PATH_SOFT_STEER"
-                elif abs(yaw) < 0.03:
-                    yaw = 0.0
-                    reason = "FRONT_CLEAR_GO_STRAIGHT"
-
-            if left is not None and left < side_stop_d * 1.6:
-                linear = min(linear, narrow_speed)
-                if yaw > 0.0:
-                    yaw = -cruise_yaw
-                    reason = "LEFT_TOO_CLOSE_STEER_RIGHT"
-            if right is not None and right < side_stop_d * 1.6:
-                linear = min(linear, narrow_speed)
-                if yaw < 0.0:
-                    yaw = cruise_yaw
-                    reason = "RIGHT_TOO_CLOSE_STEER_LEFT"
-
-            return TwistCommand(linear, yaw), reason
-
-        def _footprint_map(self, sectors: SectorMap) -> Dict[str, Any]:
-            half_width = max(0.05, self._param_float("robot_width_m") * 0.5)
-            margin = max(0.0, self._param_float("footprint_margin_m"))
-            lookahead = max(0.20, self._param_float("footprint_lookahead_m"))
-            swept_half_width = half_width + margin
-            left_clearance = sectors.distance("front_left", sectors.distance("left", 0.0)) or 0.0
-            right_clearance = sectors.distance("front_right", sectors.distance("right", 0.0)) or 0.0
-            lane_nearest_x = None
-            left_risk = 0.0
-            right_risk = 0.0
-
-            for point in sectors.points:
-                angle = math.radians(point.angle_deg)
-                x = point.distance_m * math.cos(angle)
-                y = point.distance_m * math.sin(angle)
-                if x <= 0.0 or x > lookahead:
-                    continue
-                side_risk = max(0.0, (lookahead - x) / lookahead)
-                if y >= 0.0:
-                    left_risk += side_risk
-                else:
-                    right_risk += side_risk
-                if abs(y) <= swept_half_width:
-                    if lane_nearest_x is None or x < lane_nearest_x:
-                        lane_nearest_x = x
-
-            side_bias = 0.0
-            total_risk = left_risk + right_risk
-            if total_risk > 0.0:
-                side_bias = (right_risk - left_risk) / total_risk
-
-            return {
-                "lane_nearest_x": lane_nearest_x,
-                "left_clearance": float(left_clearance),
-                "right_clearance": float(right_clearance),
-                "left_risk": left_risk,
-                "right_risk": right_risk,
-                "side_bias": side_bias,
-                "local_path": self._local_path_map(sectors),
-                "best_gap": self._best_traversable_gap_debug(sectors),
-            }
-
-        def _footprint_steer_yaw(self, footprint: Dict[str, Any], *, yaw_limit: float, fallback: float) -> float:
-            side_bias = float(footprint.get("side_bias") or 0.0)
-            if abs(side_bias) < 0.05:
-                side_bias = fallback
-            return max(-yaw_limit, min(yaw_limit, side_bias * yaw_limit))
-
-        def _local_path_map(self, sectors: SectorMap) -> Dict[str, float]:
-            headings = self._candidate_headings()
-            straight_clearance = self._path_clearance(sectors, 0.0)
-            best_heading = 0.0
-            best_clearance = -1.0
-            best_score = -1.0
-            for heading in headings:
-                clearance = self._path_clearance(sectors, heading)
-                score = clearance - abs(heading) * 0.003
-                if score > best_score:
-                    best_score = score
-                    best_heading = heading
-                    best_clearance = clearance
-            return {
-                "best_heading_deg": best_heading,
-                "best_clearance_m": best_clearance,
-                "straight_clearance_m": straight_clearance,
-            }
-
-        def _candidate_headings(self) -> list[float]:
-            max_heading = max(10.0, self._param_float("local_path_heading_deg"))
-            step = max(2.0, self._param_float("local_path_step_deg"))
-            headings = [0.0]
-            count = int(max_heading // step)
-            for index in range(1, count + 1):
-                value = index * step
-                headings.extend([value, -value])
-            return headings
-
-        def _path_clearance(self, sectors: SectorMap, heading_deg: float) -> float:
-            half_width = max(0.05, self._param_float("robot_width_m") * 0.5)
-            swept_half_width = half_width + max(0.0, self._param_float("footprint_margin_m"))
-            lookahead = max(0.20, self._param_float("footprint_lookahead_m"))
-            heading = math.radians(heading_deg)
-            cos_h = math.cos(heading)
-            sin_h = math.sin(heading)
-            clearance = lookahead
-            for point in sectors.points:
-                angle = math.radians(point.angle_deg)
-                x = point.distance_m * math.cos(angle)
-                y = point.distance_m * math.sin(angle)
-                along = x * cos_h + y * sin_h
-                lateral = -x * sin_h + y * cos_h
-                if along <= 0.0 or along > lookahead:
-                    continue
-                if abs(lateral) <= swept_half_width:
-                    clearance = min(clearance, along)
-            return clearance
-
-        def _local_path_steer_yaw(
-            self,
-            local_path: Dict[str, float],
-            *,
-            yaw_limit: float,
-            fallback: float,
-        ) -> float:
-            heading = float(local_path.get("best_heading_deg") or 0.0)
-            if abs(heading) < 1.0:
-                heading = fallback * max(10.0, self._param_float("local_path_step_deg"))
-            max_heading = max(1.0, self._param_float("local_path_heading_deg"))
-            yaw = heading / max_heading * yaw_limit
-            return max(-yaw_limit, min(yaw_limit, yaw))
-
-        def _heading_to_yaw(self, heading_deg: float, *, yaw_limit: float) -> float:
-            max_heading = max(1.0, self._param_float("local_path_heading_deg"))
-            yaw = heading_deg / max_heading * yaw_limit
-            return max(-yaw_limit, min(yaw_limit, yaw))
-
-        def _drive_heading(self, local_path: Dict[str, float], gap, *, drive_heading_limit: float) -> float:
-            path_heading = float(local_path.get("best_heading_deg") or 0.0)
-            if gap is None:
-                return path_heading
-            gap_heading = float(gap.center_deg)
-            if abs(gap_heading) <= drive_heading_limit:
-                return gap_heading
-            return path_heading
-
-        def _curve_heading_yaw(self, gap, *, soft_yaw: float, yaw_limit: float) -> float:
-            if gap is None:
-                return 0.0
-            heading = float(gap.center_deg)
-            if abs(heading) <= self._param_float("path_forward_heading_tolerance_deg"):
-                return 0.0
-            heading_yaw = self._heading_to_yaw(heading, yaw_limit=yaw_limit)
-            if abs(soft_yaw) > 0.02 and heading_yaw * soft_yaw < 0.0:
-                return 0.0
-            gain = max(0.0, self._param_float("curve_heading_gain"))
-            return max(-yaw_limit, min(yaw_limit, heading_yaw * gain))
-
-        def _avoid_reverse_turn(self, yaw: float, *, yaw_limit: float) -> float:
-            if abs(yaw) < 0.02:
-                return 0.0
-            now = time.monotonic()
-            sign = 1.0 if yaw > 0.0 else -1.0
-            cooldown = max(0.0, self._param_float("reverse_turn_cooldown_s"))
-            if (
-                self._last_motion_turn_sign != 0.0
-                and sign != self._last_motion_turn_sign
-                and now - self._last_motion_turn_time < cooldown
-            ):
-                yaw *= 0.35
-            else:
-                self._last_motion_turn_sign = sign
-                self._last_motion_turn_time = now
-            return max(-yaw_limit, min(yaw_limit, yaw))
-
-        def _best_traversable_gap(self, sectors: SectorMap):
-            gaps = traversable_gaps(
-                sectors.points,
-                robot_width_m=max(0.10, self._param_float("robot_width_m")),
-                margin_m=max(0.0, self._param_float("footprint_margin_m")),
-                min_clearance_m=max(
-                    self._param_float("path_required_clearance_m"),
-                    self._param_float("footprint_lookahead_m"),
-                ),
-            )
-            return gaps[0] if gaps else None
-
-        def _best_traversable_gap_debug(self, sectors: SectorMap) -> Dict[str, Any]:
-            gap = self._best_traversable_gap(sectors)
-            if gap is None:
-                return {"available": False}
-            return {
-                "available": True,
-                "start_deg": gap.start_deg,
-                "end_deg": gap.end_deg,
-                "center_deg": gap.center_deg,
-                "width_deg": gap.width_deg,
-                "physical_width_m": gap.physical_width_m,
-                "min_distance_m": gap.min_distance_m,
-                "score": gap.score,
-            }
-
-        def _soft_obstacle_yaw(
-            self,
-            *,
-            front_left: Optional[float],
-            front_right: Optional[float],
-            left: Optional[float],
-            right: Optional[float],
-            soft_distance: float,
-            gain: float,
-            yaw_limit: float,
-        ) -> float:
-            left_risk = self._risk(front_left, soft_distance) * 1.0 + self._risk(left, soft_distance) * 0.45
-            right_risk = self._risk(front_right, soft_distance) * 1.0 + self._risk(right, soft_distance) * 0.45
-            yaw = gain * (right_risk - left_risk)
-            return max(-yaw_limit, min(yaw_limit, yaw))
-
-        def _risk(self, distance: Optional[float], soft_distance: float) -> float:
-            if distance is None or soft_distance <= 0.0:
-                return 0.0
-            return max(0.0, (soft_distance - distance) / soft_distance)
-
-        def _clearance_score(self, side: Optional[float], front_side: Optional[float]) -> float:
-            values = [value for value in (side, front_side) if value is not None]
-            if not values:
-                return 0.0
-            return min(values)
 
         def _publish_command(self, command: TwistCommand, publish_motion: bool) -> tuple[TwistCommand, bool]:
             allow_motion = publish_motion and self.enable_motion and not self.dry_run
@@ -1041,13 +1103,12 @@ def run_ros_node(args=None) -> None:
             signal: SignalState,
             nav_suggestion,
             requested_command: TwistCommand,
-            safety_command: TwistCommand,
-            safety_reason: str,
             published_command: TwistCommand,
             motion_enabled: bool,
             dt: float,
+            now: float,
+            state_duration_s: float,
         ) -> None:
-            now = time.monotonic()
             changed = output.state != self.last_state or output.reason != self.last_reason
             if (
                 not changed
@@ -1076,11 +1137,82 @@ def run_ros_node(args=None) -> None:
 
             nav_debug = dict(nav_suggestion.debug) if nav_suggestion is not None else {}
             output_debug = dict(output.debug) if output.debug else {}
-            footprint_debug = self._footprint_map(sectors) if sectors is not None else {}
+            turn_debug = self._json_clean(self.turn_controller.snapshot(now=now))
+            emergency_debug = {
+                key: output_debug.get(key)
+                for key in (
+                    "emergency_active",
+                    "emergency_trigger_reason",
+                    "emergency_clear_counter",
+                    "emergency_trigger_count",
+                )
+            }
+            recovery_debug = {
+                "entry": output_debug.get("recovery_entry"),
+                "elapsed_s": output_debug.get("recovery_elapsed_s"),
+                "front_clear": output_debug.get("recovery_front_clear"),
+                "exit_candidate": output_debug.get("recovery_exit_candidate"),
+                "block_reason": output_debug.get("recovery_block_reason"),
+                "timeout": output_debug.get("recovery_timeout"),
+                "unstick": output_debug.get("recovery_unstick"),
+                "turn_latch": output_debug.get("recovery_turn_latch"),
+                "gap_count": nav_debug.get("gap_count"),
+                "best_gap_center_deg": nav_debug.get("gap_center"),
+                "best_gap_width_deg": nav_debug.get("gap_width"),
+                "best_gap_score": nav_debug.get("gap_score"),
+                "best_gap_min_range_m": nav_debug.get("gap_min_range_m"),
+                "selected_gap_is_left": nav_debug.get("gap_selected_left"),
+                "selected_gap_is_right": nav_debug.get("gap_selected_right"),
+            }
+            signal_age = None if signal.timestamp <= 0.0 else max(0.0, time.time() - signal.timestamp)
+            signal_debug = {
+                "raw_yolo_class": signal.raw_class or signal.direction,
+                "raw_yolo_confidence": self._json_float(signal.confidence),
+                "raw_yolo_age_s": self._json_float(signal_age),
+                "yolo_confirmation_progress": output_debug.get("yolo_confirmation_progress"),
+                "yolo_event": output_debug.get("yolo_event", signal.direction.upper()),
+                "yolo_event_status": output_debug.get("yolo_event_status"),
+                "yolo_rejection_reason": output_debug.get("yolo_rejection_reason"),
+            }
+            qr_debug = dict(self.last_qr_supervision)
+            active_maneuver = bool(output_debug.get("turn_active") or output_debug.get("active_turn_path"))
+            maneuver_phase = (
+                output.state
+                if output.state in {"TURNING_LEFT", "TURNING_RIGHT", "TURNING_UTURN", "SETTLING_AFTER_TURN", "ALIGNING_AFTER_TURN"}
+                else "none"
+            )
+            supervision = {
+                "timestamp": self._json_float(time.time()),
+                "current_state": output.state,
+                "previous_state": self.last_state,
+                "transition_reason": output.reason,
+                **signal_debug,
+                **qr_debug,
+                "active_maneuver": active_maneuver,
+                "maneuver_phase": maneuver_phase,
+                "maneuver_elapsed_s": self._json_float(turn_debug.get("turn_elapsed_s") or turn_debug.get("phase_elapsed_s")),
+                "suggested_linear_x": self._json_float(nav_suggestion.command.linear_x) if nav_suggestion is not None else None,
+                "suggested_angular_z": self._json_float(nav_suggestion.command.angular_z) if nav_suggestion is not None else None,
+                "arbiter_linear_x": self._json_float(requested_command.linear_x),
+                "arbiter_angular_z": self._json_float(requested_command.angular_z),
+                "published_linear_x": self._json_float(published_command.linear_x),
+                "published_angular_z": self._json_float(published_command.angular_z),
+                "command_source": output_debug.get("command_source", "unknown"),
+                "dry_run": self.dry_run,
+                "enable_motion": self.enable_motion,
+            }
             record = {
+                "record_schema": "reactive_nav_turn_recovery_v1",
+                "supervision_schema": "perception_fsm_supervision_v1",
+                "timestamp": self._json_float(time.time()),
+                "time_s": self._json_float(now),
+                "profile_name": self.profile_name,
+                "current_state": output.state,
                 "state": output.state,
                 "reason": output.reason,
+                "transition_reason": output.reason,
                 "previous_state": self.last_state,
+                "state_duration_s": self._json_float(state_duration_s),
                 "scan_topic": self.current_scan_topic or None,
                 "scan_count": self.scan_count,
                 "image_count": self.image_count,
@@ -1097,21 +1229,16 @@ def run_ros_node(args=None) -> None:
                     "enable_motion": self.enable_motion,
                     "motion_enabled_this_cycle": motion_enabled,
                     "publish_zero_in_dry_run": self.publish_zero_in_dry_run,
-                    "search_turn_sign": self._json_float(self._search_turn_sign),
-                    "search_clear_cycles": self._search_clear_cycles,
-                    "last_motion_turn_sign": self._json_float(self._last_motion_turn_sign),
-                    "last_motion_turn_age_s": self._json_float(time.monotonic() - self._last_motion_turn_time)
-                    if self._last_motion_turn_time > 0.0
-                    else None,
                 },
                 "command": {
                     "requested_linear_x": self._json_float(requested_command.linear_x),
                     "requested_angular_z": self._json_float(requested_command.angular_z),
-                    "safety_linear_x": self._json_float(safety_command.linear_x),
-                    "safety_angular_z": self._json_float(safety_command.angular_z),
-                    "safety_reason": safety_reason,
                     "published_linear_x": self._json_float(published_command.linear_x),
                     "published_angular_z": self._json_float(published_command.angular_z),
+                    "command_source": output_debug.get("command_source", "unknown"),
+                    "request_changed_by_publication": (
+                        requested_command != published_command
+                    ),
                     "positive_angular_z_means": "left_turn",
                 },
                 "nav": {
@@ -1123,7 +1250,13 @@ def run_ros_node(args=None) -> None:
                     "debug": self._json_clean(nav_debug),
                 },
                 "arbiter_debug": self._json_clean(output_debug),
+                "supervision": self._json_clean(supervision),
+                "recovery": self._json_clean(recovery_debug),
+                "turn": turn_debug,
+                "emergency": self._json_clean(emergency_debug),
                 "lidar": {
+                    "angle_offset_deg": self._json_float(self.lidar_yaw_offset_deg),
+                    "sector_robust_percentile": self._json_float(self.sector_robust_percentile),
                     "valid_count": sectors.valid_count if sectors is not None else 0,
                     "total_count": sectors.total_count if sectors is not None else 0,
                     "sector_distance_m": sector_distances,
@@ -1131,7 +1264,6 @@ def run_ros_node(args=None) -> None:
                     "sector_valid_count": sector_counts,
                     "left_minus_right_m": self._json_float(left_minus_right),
                 },
-                "footprint": self._json_clean(footprint_debug),
                 "signal": {
                     "direction": signal.direction,
                     "confidence": self._json_float(signal.confidence),
@@ -1141,20 +1273,75 @@ def run_ros_node(args=None) -> None:
                     "stale": signal.stale,
                     "reason": signal.reason,
                     "event_id": signal.event_id,
+                    "raw_class": signal.raw_class,
+                    **self._json_clean(signal_debug),
                 },
+                "qr": self._json_clean(qr_debug),
             }
             self.run_logger.write(record)
 
-        def _emit_diagnostics(
-            self,
-            output,
-            sectors: Optional[SectorMap],
-            lidar_age: float,
-            safe_command: TwistCommand,
-            safety_reason: str,
-            published_command: TwistCommand,
-            motion_enabled: bool,
-        ) -> None:
+        def _collision_lidar_snapshot(self, sectors: Optional[SectorMap]) -> Dict[str, Any]:
+            if sectors is None:
+                return {
+                    "valid_count": 0,
+                    "total_count": 0,
+                    "sector_distance_m": {},
+                    "left_minus_right_m": None,
+                }
+            sector_distances = {
+                name: self._json_float(stats.distance)
+                for name, stats in sectors.sectors.items()
+            }
+            sector_raw_min = {
+                name: self._json_float(stats.min_range)
+                for name, stats in sectors.sectors.items()
+            }
+            sector_counts = {
+                name: stats.valid_count
+                for name, stats in sectors.sectors.items()
+            }
+            left = sectors.distance("left")
+            right = sectors.distance("right")
+            left_minus_right = left - right if left is not None and right is not None else None
+            nearest = min(sectors.points, key=lambda point: point.distance_m) if sectors.points else None
+            return {
+                "valid_count": sectors.valid_count,
+                "total_count": sectors.total_count,
+                "sector_distance_m": sector_distances,
+                "sector_raw_min_m": sector_raw_min,
+                "sector_valid_count": sector_counts,
+                "left_minus_right_m": self._json_float(left_minus_right),
+                "nearest_dist_m": self._json_float(nearest.distance_m if nearest else None),
+                "nearest_angle_deg": self._json_float(nearest.angle_deg if nearest else None),
+            }
+
+        def _save_collision_frame(self) -> Optional[str]:
+            if self.latest_image_msg is None or self.bridge is None:
+                return None
+            try:
+                import cv2
+            except ImportError:
+                return None
+            try:
+                self.collision_image_dir.mkdir(parents=True, exist_ok=True)
+                cv_img = self.bridge.imgmsg_to_cv2(self.latest_image_msg, desired_encoding="bgr8")
+                filename = f"collision_{int(time.time() * 1000)}.jpg"
+                path = self.collision_image_dir / filename
+                if cv2.imwrite(str(path), cv_img):
+                    return str(path)
+            except Exception as exc:
+                self.diag.log("WARN", f"[COLLISION] failed to save camera frame: {exc}")
+            return None
+
+        def _ros_message_to_dict(self, msg):
+            try:
+                from rosidl_runtime_py.convert import message_to_ordereddict
+
+                return message_to_ordereddict(msg)
+            except Exception:
+                return str(msg)
+
+        def _emit_diagnostics(self, output, sectors: Optional[SectorMap], lidar_age: float) -> None:
             now = time.monotonic()
             changed = output.state != self.last_state or output.reason != self.last_reason
             periodic = now - self.last_diag_time >= self.diagnostic_period_s
@@ -1177,15 +1364,17 @@ def run_ros_node(args=None) -> None:
                 self.diag.log(
                     "INFO",
                     "[STATE] "
+                    f"profile={self.profile_name} nav={self.nav_module.name} "
                     f"state={output.state} reason={output.reason} "
-                    f"cmd=({safe_command.linear_x:.3f},{safe_command.angular_z:.3f}) "
-                    f"published=({published_command.linear_x:.3f},{published_command.angular_z:.3f}) "
-                    f"safety={safety_reason} "
-                    f"dry_run={self.dry_run} enable_motion={self.enable_motion} motion={motion_enabled} "
-                    f"scan_topic={self.current_scan_topic or 'none'} scan_count={self.scan_count} "
+                    f"cmd=({output.command.linear_x:.3f},{output.command.angular_z:.3f}) "
+                    f"dry_run={self.dry_run} enable_motion={self.enable_motion} "
+                    f"scan_topic={self.current_scan_topic or 'none'} "
+                    f"lidar_yaw_offset={self.lidar_yaw_offset_deg:.1f} scan_count={self.scan_count} "
                     f"lidar_age={self._fmt_age(freshness.lidar_age_s)} "
                     f"image_age={self._fmt_age(freshness.image_age_s)} "
-                    f"signal={self.last_signal.direction}/{self.last_signal.reason}",
+                    f"signal={self.last_signal.direction}/{self.last_signal.reason} "
+                    f"emergency={output.debug.get('emergency_trigger_reason', 'NONE')}"
+                    f"/{int(float(output.debug.get('emergency_clear_counter', 0.0) or 0.0))}",
                 )
 
             if sectors is not None:
@@ -1201,9 +1390,9 @@ def run_ros_node(args=None) -> None:
                     nearest_angle=nearest.angle_deg if nearest else 0.0,
                     gap_start=float(debug.get("gap_start", 0.0)),
                     gap_end=float(debug.get("gap_end", 0.0)),
-                    turn_hint=float(debug.get("gap_center", safe_command.angular_z * 90.0)),
-                    speed=safe_command.linear_x,
-                    yaw=safe_command.angular_z,
+                    turn_hint=float(debug.get("gap_center", output.command.angular_z * 90.0)),
+                    speed=output.command.linear_x,
+                    yaw=output.command.angular_z,
                 )
                 self.diag.lidar(snapshot)
 
@@ -1264,11 +1453,13 @@ def run_self_test() -> None:
         from .behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState
         from .lidar_sectors import extract_sectors
         from .qr_logger import QRLogger
+        from .turn_controller import TurnController
         from .wall_following import NavigationObservation, create_navigation_module
     except ImportError:  # pragma: no cover
         from behavior_arbiter import ArbiterInput, BehaviorArbiter, SignalState
         from lidar_sectors import extract_sectors
         from qr_logger import QRLogger
+        from turn_controller import TurnController
         from wall_following import NavigationObservation, create_navigation_module
 
     class FakeScan:
@@ -1287,56 +1478,60 @@ def run_self_test() -> None:
     assert sectors.distance("front") is not None
     assert sectors.distance("front_center") < 0.40
 
-    nav = create_navigation_module("forward_avoid")
+    nav = create_navigation_module("wall_follow")
     suggestion = nav.compute(NavigationObservation(sectors, time.monotonic(), 0.1))
-    assert suggestion.mode in ("AVOID_OBSTACLE", "FORWARD_AVOID")
+    assert suggestion.mode in ("RECOVERY", "CORRIDOR_FOLLOW", "LEFT_WALL_FOLLOW", "RIGHT_WALL_FOLLOW")
 
-    class FakeCorridorScan(FakeScan):
-        def __init__(self):
-            self.ranges = [2.0] * 361
-            for deg in range(-110, -69):
-                self.ranges[deg + 180] = 0.75
-            for deg in range(70, 111):
-                self.ranges[deg + 180] = 0.80
+    for module_name in ("follow_gap", "largest_gap", "focm"):
+        gap_nav = create_navigation_module(
+            module_name,
+            base_speed=0.05,
+            narrow_speed=0.03,
+            max_yaw=0.65,
+            recovery_clearance=0.42,
+            gap_bubble_radius_m=0.25,
+            robot_width_m=0.36,
+            gap_side_margin_m=0.08,
+        )
+        gap_suggestion = gap_nav.compute(NavigationObservation(sectors, time.monotonic(), 0.1))
+        assert gap_suggestion.mode in ("FOLLOW_GAP", "FOCM", "RECOVERY")
+        assert abs(gap_suggestion.command.angular_z) <= 0.65
+        assert "gap_width" in gap_suggestion.debug or gap_suggestion.reason.endswith("OPEN_SIDE")
 
-    corridor_sectors = extract_sectors(FakeCorridorScan())
-    corridor_nav = create_navigation_module("forward_avoid")
-    corridor_suggestion = corridor_nav.compute(NavigationObservation(corridor_sectors, time.monotonic(), 0.1))
-    assert corridor_suggestion.command.linear_x > 0.0
-    assert abs(corridor_suggestion.command.angular_z) < 0.01
+    class FakeSectors:
+        valid_count = 100
+        points = ()
 
-    class FakeCurveScan(FakeScan):
-        def __init__(self):
-            self.ranges = [2.0] * 361
-            for deg in range(-70, -44):
-                self.ranges[deg + 180] = 0.48
-            for deg in range(-110, -69):
-                self.ranges[deg + 180] = 0.45
+        def __init__(self, distances):
+            self._distances = distances
 
-    curve_sectors = extract_sectors(FakeCurveScan())
-    curve_nav = create_navigation_module("forward_avoid")
-    curve_suggestion = curve_nav.compute(NavigationObservation(curve_sectors, time.monotonic(), 0.1))
-    assert curve_suggestion.reason == "FRONT_CLEAR_ADAPTIVE_CURVE_STEER"
-    assert curve_suggestion.command.linear_x > 0.0
-    assert curve_suggestion.command.angular_z > 0.0
+        def distance(self, name, default=None):
+            return self._distances.get(name, default)
 
-    class FakeFootprintRiskScan(FakeScan):
-        def __init__(self):
-            self.ranges = [2.0] * 361
-            for deg in range(-20, -12):
-                self.ranges[deg + 180] = 0.68
-
-    footprint_sectors = extract_sectors(FakeFootprintRiskScan())
-    footprint_nav = create_navigation_module("forward_avoid")
-    footprint_suggestion = footprint_nav.compute(NavigationObservation(footprint_sectors, time.monotonic(), 0.1))
-    assert footprint_suggestion.reason in (
-        "FOOTPRINT_PATH_RISK",
-        "LOCAL_PATH_SELECT_HEADING",
-        "TURN_IN_PLACE_TO_TRAVERSABLE_GAP",
-        "DRIVE_DIAGONAL_TO_OPEN_SPACE",
+    sign_nav = create_navigation_module("wall_follow", base_speed=0.05, narrow_speed=0.03)
+    left_close = FakeSectors(
+        {
+            "front": 2.0,
+            "front_left": 2.0,
+            "front_right": 2.0,
+            "left": 0.25,
+            "right": 1.00,
+        }
     )
-    assert footprint_suggestion.command.linear_x > 0.0
-    assert footprint_suggestion.command.angular_z > 0.0
+    sign_suggestion = sign_nav.compute(NavigationObservation(left_close, time.monotonic(), 0.1))
+    assert sign_suggestion.command.angular_z < 0.0
+
+    right_close = FakeSectors(
+        {
+            "front": 2.0,
+            "front_left": 2.0,
+            "front_right": 2.0,
+            "left": 1.00,
+            "right": 0.25,
+        }
+    )
+    sign_suggestion = sign_nav.compute(NavigationObservation(right_close, time.monotonic(), 0.1))
+    assert sign_suggestion.command.angular_z > 0.0
 
     arbiter = BehaviorArbiter()
     decision = arbiter.decide(
@@ -1351,11 +1546,94 @@ def run_self_test() -> None:
     )
     assert decision.state == "EMERGENCY_STOP"
 
+    class FakeTurnSectors:
+        valid_count = 100
+        points = ()
+
+        def __init__(self, distances):
+            self._distances = distances
+
+        def distance(self, name, default=None):
+            return self._distances.get(name, default)
+
+    turn_controller = TurnController(
+        turn_speed=0.45,
+        turn_degrees=90.0,
+        settle_seconds=0.05,
+        align_max_seconds=0.5,
+        align_error_threshold=0.05,
+        align_stable_cycles=2,
+        align_same_direction_only=True,
+    )
+    started = time.monotonic()
+    assert turn_controller.start("LEFT", started)
+    settle_step = turn_controller.step(FakeTurnSectors({}), started + turn_controller.turn_seconds + 0.01)
+    assert settle_step.state == "SETTLING_AFTER_TURN"
+    align_step = turn_controller.step(
+        FakeTurnSectors({"left": 1.0, "right": 0.4, "front": 1.0}),
+        started + turn_controller.turn_seconds + turn_controller.settle_seconds + 0.02,
+    )
+    assert align_step.state == "ALIGNING_AFTER_TURN"
+    assert align_step.command.linear_x == 0.0
+    assert align_step.command.angular_z >= 0.0
+    assert bool(align_step.debug["align_yaw_clamped"]) is True
+
+    hysteresis_arbiter = BehaviorArbiter(
+        front_stop_distance=0.30,
+        front_stop_clear_distance=0.40,
+        side_stop_distance=0.10,
+        side_stop_clear_distance=0.18,
+        emergency_clear_cycles=3,
+    )
+    trigger = hysteresis_arbiter.decide(
+        ArbiterInput(
+            sectors=FakeTurnSectors({"front": 0.25, "front_center": 0.25, "left": 0.50, "right": 0.50}),
+            lidar_fresh=True,
+            nav_suggestion=suggestion,
+            signal=SignalState(),
+            qr_recent=False,
+            now=time.monotonic(),
+        )
+    )
+    assert trigger.state == "EMERGENCY_STOP"
+    safe_sectors = FakeTurnSectors({"front": 0.60, "front_center": 0.60, "left": 0.50, "right": 0.50})
+    for _ in range(2):
+        hold = hysteresis_arbiter.decide(
+            ArbiterInput(
+                sectors=safe_sectors,
+                lidar_fresh=True,
+                nav_suggestion=suggestion,
+                signal=SignalState(),
+                qr_recent=False,
+                now=time.monotonic(),
+            )
+        )
+        assert hold.state == "EMERGENCY_STOP"
+    cleared = hysteresis_arbiter.decide(
+        ArbiterInput(
+            sectors=safe_sectors,
+            lidar_fresh=True,
+            nav_suggestion=suggestion,
+            signal=SignalState(),
+            qr_recent=False,
+            now=time.monotonic(),
+        )
+    )
+    assert cleared.state != "EMERGENCY_STOP"
+
     with tempfile.TemporaryDirectory() as tmp:
         logger = QRLogger(Path(tmp) / "qr_log.jsonl", confirm_count=2)
         assert logger.observe("checkpoint-1") is None
         event = logger.observe("checkpoint-1", robot_state="QR_SCAN")
         assert event is not None and event.logged
+
+    profiles_dir = Path(__file__).resolve().parent / "configs"
+    wall_profile = load_profile_parameters(profiles_dir / "wall_follow_safe.yaml")
+    ftg_profile = load_profile_parameters(profiles_dir / "follow_gap_safe.yaml")
+    assert wall_profile["profile_name"] == "wall_follow_safe"
+    assert wall_profile["nav_module"] == "wall_follow"
+    assert ftg_profile["profile_name"] == "follow_gap_safe"
+    assert ftg_profile["nav_module"] == "follow_gap"
 
     payload_path = Path(tempfile.gettempdir()) / "reactive_nav_signal_test.json"
     payload_path.write_text(

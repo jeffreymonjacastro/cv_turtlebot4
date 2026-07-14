@@ -5,20 +5,9 @@
     "stop-signal",
     "meta"
   ],
-  "packaged_labeled_images": 506,
-  "train_images": 404,
-  "val_images": 102,
-  "source_folder_counts": {
-    "left-arrow": 138,
-    "right-arrow": 127,
-    "stop-signal": 173,
-    "stop-signal-inverted": 48,
-    "meta": 20
-  },
-  "label_class_counts": {
-    "left-arrow": 138,
-    "right-arrow": 127,
-    "stop-signal": 221,
-    "meta": 20
-  }
+  "total_source_images": 540,
+  "packaged_labeled_images": 458,
+  "train_images": 366,
+  "val_images": 92,
+  "unlabeled_or_skipped_source_images": 82
 }

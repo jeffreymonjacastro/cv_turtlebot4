@@ -7,7 +7,9 @@
 # ============================================================
 import socket
 import base64
+import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -15,8 +17,8 @@ import numpy as np
 import cv2
 
 # ========= Configuracion =========
-ROBOT_IP = "192.168.0.103"
-ROBOT_PORT = 6000
+ROBOT_IP = os.environ.get("ROBOT_IP", "10.60.199.200")
+ROBOT_PORT = int(os.environ.get("ROBOT_PORT", os.environ.get("QR_TELEMETRY_PORT", "6611")))
 
 DESIRED_DOMAIN_ID = 2
 PAIRING_CODE = "ROBOT_A_2"
@@ -209,7 +211,8 @@ def handle_remote_qr(parts, raw_text):
 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    robot_addr = (ROBOT_IP, ROBOT_PORT)
+    robot_ip = sys.argv[1] if len(sys.argv) > 1 else ROBOT_IP
+    robot_addr = (robot_ip, ROBOT_PORT)
 
     do_handshake(sock, robot_addr)
 

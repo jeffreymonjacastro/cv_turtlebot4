@@ -5,19 +5,29 @@
 #  - Carga un YOLO detect custom y dibuja bounding boxes en vivo
 #  - Escribe output/signals/latest_signal.json para win/yolo/enviador.py
 # ============================================================
-import base64
+import argparse
 import json
 import os
 import socket
+import sys
 import time
 from pathlib import Path
 
 import cv2
-import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from win.yolo.frame_stream import decode_img_parts, do_handshake as frame_stream_handshake
+from win.yolo.perception_event_state import PerceptionEventState
+from win.yolo.qr_pipeline import LatestFrameQRWorker, QRFrame
+from win.yolo.qr_validator import QRValidator
+from win.yolo.qr_zxing import DEFAULT_VARIANTS, ZXingQRDecoder
 
 # ========= Telemetria =========
-ROBOT_IP = "10.60.199.200"
-ROBOT_PORT = 6000
+ROBOT_IP = os.environ.get("ROBOT_IP", "10.60.199.200")
+ROBOT_PORT = int(os.environ.get("ROBOT_PORT", os.environ.get("YOLO_TELEMETRY_PORT", "6610")))
 
 DESIRED_DOMAIN_ID = 2
 PAIRING_CODE = "ROBOT_A_2"
@@ -25,18 +35,16 @@ EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
 
 # ========= YOLO =========
 CONF_THRESHOLD = 0.30
-ACTION_CONF_THRESHOLD = 0.90
-ACTION_MIN_AREA_RATIO = 0.18
-ACTION_CENTER_X_MIN = 0.25
-ACTION_CENTER_X_MAX = 0.75
+ACTION_CONF_THRESHOLD = float(os.environ.get("YOLO_ACTION_CONF_THRESHOLD", "0.30"))
+ACTION_MIN_AREA_RATIO = float(os.environ.get("YOLO_ACTION_MIN_AREA_RATIO", "0.01"))
+ACTION_CENTER_X_MIN = float(os.environ.get("YOLO_ACTION_CENTER_X_MIN", "0.03"))
+ACTION_CENTER_X_MAX = float(os.environ.get("YOLO_ACTION_CENTER_X_MAX", "0.97"))
 IMG_SIZE = 640
 SIGNAL_CHECK_EVERY_N_FRAMES = 1
 STABLE_SIGNAL_FRAMES = 2
 MIN_SIGNAL_WRITE_INTERVAL_SECONDS = 0.10
-SAVE_ACTIONABLE_COOLDOWN_SECONDS = 1.5
 SCAN_PRINT_INTERVAL_SECONDS = 1.0
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_CANDIDATES = [
     (
         Path(os.environ["YOLO_SIGNAL_MODEL"])
@@ -44,11 +52,11 @@ MODEL_CANDIDATES = [
         else None
     ),
     REPO_ROOT / "models" / "signals" / "best.pt",
-    REPO_ROOT / "kaggle" / "v4" / "outputs" / "best.pt",
+    REPO_ROOT / "kaggle" / "v3" / "outputs" / "best.pt",
 ]
 SIGNAL_OUTPUT_DIR = REPO_ROOT / "output" / "signals"
 LATEST_SIGNAL_PATH = SIGNAL_OUTPUT_DIR / "latest_signal.json"
-YOLO_OUTPUT_DIR = REPO_ROOT / "output" / "yolo"
+LATEST_QR_EVENT_PATH = SIGNAL_OUTPUT_DIR / "latest_qr_event.json"
 
 LEFT_ALIASES = ("left", "izquierda")
 RIGHT_ALIASES = ("right", "derecha")
@@ -63,8 +71,11 @@ _model = None
 _last_signal_write_time = 0.0
 _last_signal_signature = None
 _last_write_warning_time = 0.0
-_last_saved_detection_time = 0.0
-_last_saved_detection_direction = None
+_view_only = False
+_event_state = None
+_qr_worker = None
+_qr_latest = {"status": "disabled"}
+_perception_log_path = None
 
 
 def should_print_scan():
@@ -198,7 +209,16 @@ def write_latest_signal(direction, confidence, source_frame_time, detection=None
             "stable_frames": STABLE_SIGNAL_FRAMES,
         },
     }
-    if atomic_write_json(LATEST_SIGNAL_PATH, payload):
+    try:
+        if _event_state is not None:
+            _event_state.write_yolo(payload)
+            wrote = True
+        else:
+            wrote = atomic_write_json(LATEST_SIGNAL_PATH, payload)
+    except OSError as exc:
+        print(f"[SIGNAL] Error escribiendo {LATEST_SIGNAL_PATH}: {exc}")
+        wrote = False
+    if wrote:
         _last_signal_signature = signature
         _last_signal_write_time = monotonic_now
 
@@ -261,47 +281,78 @@ def draw_detection(img, detection):
     center_x_ratio = detection["center_x_ratio"]
     actionable = detection["actionable"]
     color = detection_color(direction)
-    label = f"{direction} {confidence:.2f} {area_ratio:.0%}"
+    label = (
+        f"{direction} {confidence:.2f} area={area_ratio:.1%} cx={center_x_ratio:.2f}"
+    )
     if actionable:
         label += " ACTION"
 
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-    font_scale = 0.38
-    thickness = 1
-    (text_w, text_h), baseline = cv2.getTextSize(
-        label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
-    )
-    label_x = max(0, min(x1, img.shape[1] - text_w - 4))
-    label_y = max(text_h + 4, y1 - 5)
-    cv2.rectangle(
-        img,
-        (label_x, label_y - text_h - baseline - 4),
-        (label_x + text_w + 4, label_y + baseline),
-        (0, 0, 0),
-        -1,
-    )
     cv2.putText(
         img,
         label,
-        (label_x + 2, label_y - 2),
+        (x1, max(20, y1 - 10)),
         cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
+        0.55,
         color,
-        thickness,
+        2,
         cv2.LINE_AA,
     )
 
 
 def draw_status(img):
-    if _stable_direction == "none":
+    if _view_only:
+        text = "Vista en vivo oficial | YOLO desactivado (--view-only)"
+        color = (255, 255, 255)
+    elif _stable_direction == "none":
         text = "Estado: buscando senal | comando esperado: adelante"
         color = (255, 255, 255)
     else:
         text = f"Estado estable: {_stable_direction}"
         color = detection_color(_stable_direction)
     cv2.putText(
-        img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA
+        img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
     )
+
+
+def _update_qr_latest(record):
+    global _qr_latest
+    _qr_latest = dict(record)
+
+
+def draw_qr_status(img):
+    status = str(_qr_latest.get("qr_event_status") or _qr_latest.get("status") or "idle")
+    payload = str(_qr_latest.get("qr_event") or "NONE")
+    variant = str(_qr_latest.get("qr_decode_variant") or "none")
+    latency = float(_qr_latest.get("qr_decode_latency_ms") or 0.0)
+    progress = str(_qr_latest.get("qr_confirmation_progress") or "0/0")
+    reason = str(_qr_latest.get("qr_rejection_reason") or "none")
+    metrics = _qr_latest.get("queue_metrics") or {}
+    color = (0, 255, 0) if status == "validated" else (0, 200, 255)
+    lines = [
+        f"QR {status} payload={payload[:36]} progress={progress}",
+        f"variant={variant} latency={latency:.1f}ms reason={reason[:32]}",
+        f"queue replaced={metrics.get('replaced', 0)} stale={metrics.get('stale', 0)} errors={metrics.get('errors', 0)}",
+    ]
+    for index, text in enumerate(lines):
+        cv2.putText(
+            img,
+            text,
+            (10, 50 + index * 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def _append_perception_record(record):
+    if _perception_log_path is None:
+        return
+    _perception_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with _perception_log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
 def detect_signal(img):
@@ -367,77 +418,20 @@ def detect_signal(img):
     return best
 
 
-def save_actionable_detection(img, detection, source_frame_time):
-    global _last_saved_detection_direction, _last_saved_detection_time
-
-    if detection is None or not detection.get("actionable"):
-        return
-
-    now = time.monotonic()
-    direction = detection["direction"]
-    if (
-        direction == _last_saved_detection_direction
-        and now - _last_saved_detection_time < SAVE_ACTIONABLE_COOLDOWN_SECONDS
-    ):
-        return
-
-    YOLO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    safe_frame_time = str(source_frame_time).replace(".", "_")
-    confidence = int(round(float(detection["confidence"]) * 100))
-    area = int(round(float(detection["area_ratio"]) * 100))
-    filename = (
-        f"{time.strftime('%Y%m%d_%H%M%S')}_{safe_frame_time}_"
-        f"{direction}_conf{confidence}_area{area}.jpg"
-    )
-    output_path = YOLO_OUTPUT_DIR / filename
-
-    if cv2.imwrite(str(output_path), img):
-        _last_saved_detection_direction = direction
-        _last_saved_detection_time = now
-        print(f"[YOLO] Captura guardada: {output_path}")
-    else:
-        print(f"[YOLO] No se pudo guardar captura: {output_path}")
-
-
 def do_handshake(sock, robot_addr):
-    sock.settimeout(1.0)
     print(f"[HANDSHAKE] Iniciando con {robot_addr}...")
-    while True:
-        msg = f"HELLO {DESIRED_DOMAIN_ID} {PAIRING_CODE}".encode("utf-8")
-        sock.sendto(msg, robot_addr)
-        try:
-            data, addr = sock.recvfrom(4096)
-            text = data.decode("utf-8").strip()
-            parts = text.split()
-
-            if len(parts) >= 3 and parts[0] == "ACK":
-                domain_str = parts[1]
-                robot_name = " ".join(parts[2:])
-                print(f"[HANDSHAKE] Recibido: '{text}' desde {addr}")
-                try:
-                    domain_id = int(domain_str)
-                except ValueError:
-                    print("[HANDSHAKE] domain_id invalido, reintentando...")
-                    continue
-                if domain_id != DESIRED_DOMAIN_ID:
-                    print("[HANDSHAKE] ROS_DOMAIN_ID no coincide. Reintentando...")
-                    continue
-                if robot_name != EXPECTED_ROBOT_NAME:
-                    print("[HANDSHAKE] robot_name no coincide. Reintentando...")
-                    continue
-                print(
-                    f"[HANDSHAKE] Emparejado con '{robot_name}' (domain {domain_id})."
-                )
-                sock.settimeout(None)
-                return
-
-            print(f"[HANDSHAKE] Mensaje inesperado: '{text}', reintentando...")
-
-        except socket.timeout:
-            print("[HANDSHAKE] Timeout esperando ACK, reintentando...")
-        except KeyboardInterrupt:
-            print("[HANDSHAKE] Cancelado.")
-            raise
+    try:
+        frame_stream_handshake(
+            sock,
+            robot_addr,
+            domain_id=DESIRED_DOMAIN_ID,
+            pairing_code=PAIRING_CODE,
+            expected_robot_name=EXPECTED_ROBOT_NAME,
+        )
+    except KeyboardInterrupt:
+        print("[HANDSHAKE] Cancelado.")
+        raise
+    print(f"[HANDSHAKE] Emparejado con '{EXPECTED_ROBOT_NAME}' (domain {DESIRED_DOMAIN_ID}).")
 
 
 def handle_scan(parts):
@@ -464,6 +458,10 @@ def handle_scan(parts):
 def process_signal_from_image(img, sec, nsec):
     global _signal_frame_counter
 
+    if _view_only:
+        draw_status(img)
+        return
+
     _signal_frame_counter += 1
     source_frame_time = f"{sec}.{nsec:09d}"
     if _signal_frame_counter % SIGNAL_CHECK_EVERY_N_FRAMES != 0:
@@ -474,7 +472,6 @@ def process_signal_from_image(img, sec, nsec):
     draw_detection(img, detection)
     update_stable_signal(detection, source_frame_time)
     draw_status(img)
-    save_actionable_detection(img, detection, source_frame_time)
 
 
 def handle_img(parts):
@@ -482,45 +479,134 @@ def handle_img(parts):
         print("[IMG] Mensaje demasiado corto.")
         return
     try:
-        robot_name = parts[2]
-        domain_id = int(parts[1])
-        sec = int(parts[3])
-        nsec = int(parts[4])
-        b64_str = " ".join(parts[5:])
-        jpeg_bytes = base64.b64decode(b64_str)
-        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            print("[IMG] Error al decodificar imagen.")
-            return
+        frame = decode_img_parts(parts)
+        img = frame.image
+        if _qr_worker is not None:
+            _qr_worker.submit(
+                QRFrame(
+                    image=img.copy(),
+                    frame_id=frame.frame_id,
+                    source_frame_time=frame.source_frame_time,
+                    received_at=frame.received_at,
+                    received_monotonic=frame.received_monotonic,
+                )
+            )
 
-        process_signal_from_image(img, sec, nsec)
+        yolo_started = time.perf_counter()
+        process_signal_from_image(img, frame.sec, frame.nanosec)
+        yolo_loop_ms = (time.perf_counter() - yolo_started) * 1000.0
+        _append_perception_record(
+            {
+                "record_type": "yolo_frame",
+                "timestamp": time.time(),
+                "source_frame_time": frame.source_frame_time,
+                "yolo_loop_latency_ms": round(yolo_loop_ms, 3),
+                "stable_direction": _stable_direction,
+                "qr_enabled": _qr_worker is not None,
+            }
+        )
+        if _qr_worker is not None:
+            draw_qr_status(img)
 
-        cv2.imshow(f"YOLO signals {robot_name} (domain {domain_id})", img)
+        cv2.imshow(f"YOLO signals {frame.robot_name} (domain {frame.domain_id})", img)
         cv2.waitKey(1)
     except Exception as e:
         print(f"[IMG] Error: {e}")
 
 
-def main():
-    global _model
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("robot_ip", nargs="?", default=ROBOT_IP, help="IP del TurtleBot")
+    parser.add_argument(
+        "--view-only",
+        action="store_true",
+        help="Solo muestra la camara en vivo. No ejecuta YOLO ni escribe latest_signal.json.",
+    )
+    parser.add_argument("--enable-qr", action="store_true", help="Enable isolated laptop ZXing QR processing.")
+    parser.add_argument("--qr-event-path", default=str(LATEST_QR_EVENT_PATH), help="Validated QR semantic state path.")
+    parser.add_argument("--perception-log", default=None, help="Optional combined laptop perception JSONL log.")
+    parser.add_argument("--qr-max-hz", type=float, default=5.0)
+    parser.add_argument("--qr-max-frame-age-s", type=float, default=0.5)
+    parser.add_argument("--qr-confirm-count", type=int, default=1)
+    parser.add_argument("--qr-confirm-window-s", type=float, default=1.2)
+    parser.add_argument("--qr-duplicate-cooldown-s", type=float, default=10.0)
+    parser.add_argument(
+        "--qr-variants",
+        default=",".join(DEFAULT_VARIANTS),
+        help="Comma-separated bounded ZXing preprocessing stages.",
+    )
+    return parser.parse_args()
 
-    _model = load_signal_model()
-    write_latest_signal("none", 0.0, None)
+
+def print_banner(robot_ip):
+    mode = "VIEW ONLY" if _view_only else "LIVE VIEW + YOLO"
+    print("=" * 72)
+    print("[CAMERA] Ventana oficial de vista en vivo del TurtleBot para el operador")
+    print(f"[CAMERA] Modo: {mode}")
+    print(f"[CAMERA] Robot: {robot_ip}:{ROBOT_PORT}")
+    print(f"[CAMERA] Estado compartido: {LATEST_SIGNAL_PATH}")
+    print("=" * 72)
+
+
+def main():
+    global _event_state, _model, _perception_log_path, _qr_latest, _qr_worker, _view_only
+
+    args = parse_args()
+    _view_only = args.view_only
+    robot_ip = args.robot_ip
+    _perception_log_path = Path(args.perception_log).expanduser().resolve() if args.perception_log else None
+    qr_event_path = Path(args.qr_event_path).expanduser().resolve()
+    _event_state = PerceptionEventState(yolo_path=LATEST_SIGNAL_PATH, qr_path=qr_event_path)
+
+    if args.enable_qr:
+        try:
+            qr_event_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        variants = tuple(item.strip() for item in args.qr_variants.split(",") if item.strip())
+        decoder = ZXingQRDecoder(variants)
+        validator = QRValidator(
+            confirm_count=args.qr_confirm_count,
+            confirm_window_s=args.qr_confirm_window_s,
+            duplicate_cooldown_s=args.qr_duplicate_cooldown_s,
+            max_frame_age_s=args.qr_max_frame_age_s,
+        )
+        _qr_worker = LatestFrameQRWorker(
+            event_state=_event_state,
+            decoder=decoder,
+            validator=validator,
+            max_hz=args.qr_max_hz,
+            log_path=_perception_log_path,
+            result_callback=_update_qr_latest,
+        )
+        _qr_worker.start()
+        _qr_latest = {"status": "starting" if decoder.available else "decoder_unavailable"}
+        print(f"[QR] ZXing enabled={decoder.available} event={qr_event_path} variants={variants}")
+        if not decoder.available:
+            print(f"[QR] ZXing unavailable; YOLO will continue: {decoder.import_error}")
+
+    if _view_only:
+        _model = None
+    else:
+        _model = load_signal_model()
+        write_latest_signal("none", 0.0, None)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    robot_addr = (ROBOT_IP, ROBOT_PORT)
+    robot_addr = (robot_ip, ROBOT_PORT)
 
+    print_banner(robot_ip)
     do_handshake(sock, robot_addr)
 
-    print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
-    print(f"[MAIN] Estado compartido: {LATEST_SIGNAL_PATH}")
-    print(
-        "[MAIN] Para accionar: "
-        f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
-        f"centro_x={ACTION_CENTER_X_MIN:.2f}-{ACTION_CENTER_X_MAX:.2f}, "
-        f"estable {STABLE_SIGNAL_FRAMES} frames."
-    )
+    if _view_only:
+        print("[MAIN] Recibiendo frames. YOLO desactivado por --view-only. Ctrl+C para salir.")
+    else:
+        print("[MAIN] Recibiendo frames y detectando senales. Ctrl+C para salir.")
+        print(
+            "[MAIN] Para accionar: "
+            f"conf>={ACTION_CONF_THRESHOLD:.2f}, area>={ACTION_MIN_AREA_RATIO:.1%}, "
+            f"centro_x={ACTION_CENTER_X_MIN:.2f}-{ACTION_CENTER_X_MAX:.2f}, "
+            f"estable {STABLE_SIGNAL_FRAMES} frames."
+        )
     try:
         while True:
             data, _addr = sock.recvfrom(65535)
@@ -541,7 +627,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[MAIN] Cerrando...")
     finally:
-        write_latest_signal("none", 0.0, None)
+        if _qr_worker is not None:
+            _qr_worker.stop()
+        if not _view_only:
+            write_latest_signal("none", 0.0, None)
         sock.close()
         cv2.destroyAllWindows()
 

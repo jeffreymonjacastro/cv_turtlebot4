@@ -1,0 +1,63 @@
+/**:
+  ros__parameters:
+    profile_name: wall_follow_less_conservative
+    nav_module: wall_follow
+    lidar_yaw_offset_deg: 90.0
+    sector_robust_percentile: 0.20
+
+    base_speed: 0.0913
+    narrow_speed: 0.040
+    turn_slow_speed: 0.035
+    corner_slow_speed: 0.040
+    turn_slow_yaw_threshold: 0.22
+    max_yaw: 0.62
+    angular_smoothing_alpha: 0.65
+
+    wall_kp: 0.2976
+    wall_kd: 0.0417
+    front_clear_distance: 0.52
+    slow_distance: 0.44
+    recovery_clearance: 0.36
+    side_avoid_distance: 0.25
+    front_corner_avoid_distance: 0.56
+    avoidance_gain: 0.62
+
+    gap_bubble_radius_m: 0.22
+    gap_min_width_deg: 14.0
+    gap_search_min_deg: -135.0
+    gap_search_max_deg: 135.0
+    gap_heading_scale_deg: 70.0
+    gap_distance_score_cap_m: 3.0
+    gap_forward_cone_deg: 24.0
+    robot_width_m: 0.36
+    gap_side_margin_m: 0.04
+
+    front_stop_distance: 0.24
+    front_stop_clear_distance: 0.32
+    side_stop_distance: 0.10
+    side_stop_clear_distance: 0.16
+    emergency_clear_cycles: 2
+    turn_clearance: 0.35
+    turn_speed: 0.45
+    turn_degrees: 90.0
+    settle_seconds: 0.25
+    align_max_seconds: 1.6
+    align_yaw_limit: 0.28
+    align_gain: 0.45
+    align_error_threshold: 0.08
+    align_stable_cycles: 3
+    align_same_direction_only: true
+
+    sign_confirm_window: 4
+    sign_confirm_count: 2
+    sign_min_confidence: 0.65
+    sign_min_area_ratio: 0.02
+    sign_cooldown_s: 3.0
+
+    enable_qr_events: true
+    enable_external_qr_events: true
+    enable_qr_detection: false
+    qr_injection_path: /home/ubuntu/output/signals/latest_qr_event.json
+    max_external_qr_source_frame_age_s: 0.5
+    qr_check_every_n_frames: 1
+    qr_confirm_count: 1

@@ -31,7 +31,7 @@ Runtime flow:
 ```text
 /scan
   -> lidar_sectors.py
-  -> selected navigation module from wall_following.py
+  -> selected navigation module from wall_following.py / gap_navigation.py
   -> behavior_arbiter.py safety checks
   -> /cmd_vel TwistStamped
   -> create3_repub
@@ -52,10 +52,30 @@ The navigation algorithm is replaceable through a factory:
 
 ```bash
 -p nav_module:=wall_follow
+-p nav_module:=follow_gap
+-p nav_module:=focm
 ```
 
 Safety, QR, YOLO reading, diagnostics, and command publishing stay outside the
 navigation module.
+
+Available modules:
+
+- `wall_follow`: corridor/wall following with free-gap recovery.
+- `follow_gap`: F1TENTH-style Follow-the-Gap using nearest-obstacle bubble removal and largest safe angular gap selection.
+- `focm`: Follow the Obstacle Circle Method using physical gap width selection and obstacle-circle tangent heading.
+
+Shared gap/FOCM tuning parameters:
+
+```bash
+-p gap_bubble_radius_m:=0.30
+-p gap_min_width_deg:=18.0
+-p gap_search_min_deg:=-120.0
+-p gap_search_max_deg:=120.0
+-p robot_width_m:=0.36
+-p gap_side_margin_m:=0.08
+-p focm_alpha:=40.0
+```
 
 ## Do not run these together
 
@@ -182,7 +202,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
   -p collision_log_path:=/home/ubuntu/output/collision_events.jsonl \
   -p collision_image_dir:=/home/ubuntu/output/collision_frames \
@@ -280,13 +300,13 @@ state=SENSOR_CHECK reason=NO_LIDAR_SECTOR_MAP cmd=(0.000,0.000)
 
 ## UDP diagnostics
 
-Use port `6001` for the new navigator so it does not collide with the existing
-image telemetry sender on port `6000`.
+Use port `6612` for the new navigator diagnostics so it does not collide with
+teammates using the legacy image telemetry sender on port `6000`.
 
 Laptop receiver:
 
 ```powershell
-$env:ROBOT_PORT=6001
+$env:ROBOT_PORT=6612
 python win/lidar/recibidor.py <robot_ip>
 ```
 
@@ -348,7 +368,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=true \
   -p enable_motion:=false \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p sign_confirm_window:=1 \
   -p sign_confirm_count:=1 \
   -p max_signal_age_s:=30.0 \
@@ -400,7 +420,7 @@ cd /home/ubuntu
 python3 -B /home/ubuntu/reactive_nav_test/reactive_nav/reactive_navigator.py --ros-args \
   -p dry_run:=false \
   -p enable_motion:=true \
-  -p telemetry_port:=6001 \
+  -p telemetry_port:=6612 \
   -p signal_state_path:=/home/ubuntu/output/signals/latest_signal.json \
   -p qr_log_path:=/home/ubuntu/output/qr_log.jsonl \
   -p persistent_log_path:=/home/ubuntu/output/reactive_nav_debug.jsonl \
@@ -426,6 +446,186 @@ state=CORRIDOR_FOLLOW
 cmd=(0.040,...)
 scan_count increasing
 lidar_age < 0.5s
+```
+
+## Real-movement test for `wall_follow_less_conservative`
+
+Use this only after the dry-run gates pass. This profile is intentionally less
+conservative than `wall_follow_tuned`, so treat it as a measured candidate, not
+as the new default.
+
+Required gates before motion:
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh angle_offset_dryrun \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Acceptance before continuing:
+
+```text
+fresh scan callbacks
+dry_run=True
+enable_motion=False
+front/left/right sectors look physically sane
+no emergency-stop burst caused by obviously wrong angle offset
+```
+
+The movement tests below save each run under:
+
+```text
+/home/ubuntu/output/robot_runs/<timestamp>_wall_follow_less_conservative_<scenario>/
+```
+
+Each run directory includes:
+
+```text
+reactive_nav_debug.jsonl     primary evidence for extraction/replay/ablation
+collision_events.jsonl       Create 3 hazard/collision evidence, if any
+collision_frames/            camera frames near collision events, if available
+profile.yaml                 exact profile used for the run
+operator_note.md             human observation template
+bag/                         optional ROS bag when --bag is used
+```
+
+### Candidate left-turn movement capture
+
+Put the robot in open space with a safe left-turn corridor/aisle, and keep a
+human ready to stop it. This command injects a synthetic LEFT sign by default so
+the test actually exercises `TURNING_LEFT` instead of depending on YOLO timing.
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh left_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence includes TURNING_LEFT and/or ALIGNING_AFTER_TURN
+published commands are non-zero only while dry_run=False enable_motion=True
+emergency stop still interrupts if front/side clearance becomes unsafe
+run directory printed at the end
+```
+
+### Candidate right-turn movement capture
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh right_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence includes TURNING_RIGHT and/or ALIGNING_AFTER_TURN
+no repeated turn/recovery loop
+no corner/side scrape intervention
+run directory printed at the end
+```
+
+### Candidate front-blocked recovery movement capture
+
+Use a controlled front-blocked setup with visible escape room to at least one
+side. Do not box the robot into a real collision. This test is meant to verify
+that recovery can rotate/select a gap and exit instead of freezing in place.
+
+```bash
+cd /home/ubuntu/reactive_nav_test
+bash scripts/run_turn_recovery_capture.sh front_blocked_recovery \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 30 \
+  --no-bag
+```
+
+Expected evidence:
+
+```text
+state sequence may enter RECOVERY or FRONT_BLOCKED_SELECT_FREE_GAP
+recovery should publish a turn command when there is a safe open side
+recovery should exit when front clearance becomes safe
+no long stationary loop with front blocked and zero yaw
+```
+
+### Optional bag recording
+
+Use `--bag` for the best replay evidence if disk space allows:
+
+```bash
+bash scripts/run_turn_recovery_capture.sh left_turn \
+  --profile-file /home/ubuntu/reactive_nav_test/reactive_nav/configs/wall_follow_less_conservative.yaml \
+  --duration-sec 20 \
+  --bag
+```
+
+The JSONL log is still the primary input for the current extraction/replay
+pipeline. The bag is extra evidence for later scan-level reconstruction.
+
+### Pull movement evidence back to the Mac
+
+From the Mac:
+
+```bash
+mkdir -p output/robot_runs
+rsync -av turtlebot4:/home/ubuntu/output/robot_runs/ output/robot_runs/
+```
+
+If you only want the new candidate runs:
+
+```bash
+mkdir -p output/robot_runs
+rsync -av --include='*/' --include='*wall_follow_less_conservative*/***' --exclude='*' \
+  turtlebot4:/home/ubuntu/output/robot_runs/ \
+  output/robot_runs/
+```
+
+### Analyze movement logs for replay/ablation
+
+Run these locally after rsync:
+
+```bash
+.venv/bin/python -m pytest tests/
+
+.venv/bin/python scripts/extract_turn_recovery_intervals.py \
+  output/robot_runs/*wall_follow_less_conservative*/reactive_nav_debug.jsonl \
+  --out-dir output/turn_recovery_analysis/wall_follow_less_conservative_real_movement
+
+.venv/bin/python scripts/replay_turn_recovery_intervals.py \
+  --intervals output/turn_recovery_analysis/wall_follow_less_conservative_real_movement/failure_intervals.jsonl \
+  --profiles wall_follow_tuned wall_follow_less_conservative \
+  --out-dir output/turn_recovery_replay/wall_follow_less_conservative_real_movement
+
+.venv/bin/python scripts/run_turn_recovery_ablation.py \
+  --intervals output/turn_recovery_analysis/wall_follow_less_conservative_real_movement/failure_intervals.jsonl \
+  --out-dir output/turn_recovery_ablation/wall_follow_less_conservative_real_movement
+```
+
+If `failure_intervals.jsonl` is empty, keep the raw `reactive_nav_debug.jsonl`
+runs anyway. They are still useful as passing movement evidence and can be used
+to verify that future controller changes do not regress turn entry, recovery
+exit, or safety veto behavior.
+
+### Promotion rule
+
+Do not replace `wall_follow_tuned` from one physical run. Promote the candidate
+only if the pulled logs show:
+
+```text
+left and right movement captures enter turn states when forced signs are fresh
+front-blocked recovery does not stay frozen with zero yaw
+no increase in corner/side risk relative to baseline replay
+no repeated turn/recovery state loop
+no emergency-stop burst caused by relaxed thresholds
+offline replay/ablation confirms the improvement source
 ```
 
 ## If logs show non-zero cmd but robot does not move

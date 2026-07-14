@@ -43,6 +43,8 @@ URL:
 https://f1tenth-coursekit.readthedocs.io/en/stable/assignments/labs/lab4.html
 ```
 
+Paper can be found at `papers/ftg.pdf`
+
 Use for:
 
 - emergency/recovery behavior

@@ -7,15 +7,17 @@
 # ============================================================
 import json
 import math
+import os
 import socket
 import struct
+import sys
 import time
 from pathlib import Path
 
 import msvcrt
 
-ROBOT_IP = "10.60.199.200"
-ROBOT_PORT = 5007
+ROBOT_IP = os.environ.get("ROBOT_IP", "172.31.245.201")
+ROBOT_PORT = int(os.environ.get("ROBOT_PORT", "5007"))
 
 SEND_HZ = 30
 SIGNAL_READ_HZ = 10
@@ -40,11 +42,15 @@ def pack_cmd(v, w):
 
 
 def send_cmd(sock, v, w):
-    sock.sendto(pack_cmd(v, w), (ROBOT_IP, ROBOT_PORT))
+    sock.sendto(pack_cmd(v, w), (target_robot_ip(), ROBOT_PORT))
 
 
 def send_stop(sock):
     send_cmd(sock, 0.0, 0.0)
+
+
+def target_robot_ip():
+    return sys.argv[1] if len(sys.argv) > 1 else ROBOT_IP
 
 
 def read_latest_signal():
@@ -124,7 +130,7 @@ def main():
     paused = False
 
     print("=== YOLO Signals Auto Driver (Windows) ===")
-    print(f"Target cmd_vel UDP: {ROBOT_IP}:{ROBOT_PORT} @ {SEND_HZ} Hz")
+    print(f"Target cmd_vel UDP: {target_robot_ip()}:{ROBOT_PORT} @ {SEND_HZ} Hz")
     print(f"Signal file: {LATEST_SIGNAL_PATH}")
     print(f"Forward: {FORWARD_SPEED:.2f} m/s")
     print(

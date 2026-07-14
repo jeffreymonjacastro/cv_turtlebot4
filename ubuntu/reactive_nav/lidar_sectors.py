@@ -108,8 +108,14 @@ def _clean_range(raw: float, range_min: float, range_max: float) -> Optional[flo
     return min(float(raw), float(range_max))
 
 
-def scan_to_points(scan) -> Tuple[ScanPoint, ...]:
-    """Convert a ROS-like LaserScan object into cleaned angle/range points."""
+def scan_to_points(scan, *, angle_offset_deg: float = 0.0) -> Tuple[ScanPoint, ...]:
+    """Convert a ROS-like LaserScan object into cleaned angle/range points.
+
+    ``angle_offset_deg`` rotates scan-frame angles into the robot base frame.
+    Use it when the LiDAR frame is mounted yawed relative to the TurtleBot
+    forward axis, for example +90 degrees when the LiDAR's zero angle points
+    toward the robot's left side.
+    """
     ranges = list(getattr(scan, "ranges", []) or [])
     range_min = float(getattr(scan, "range_min", 0.0) or 0.0)
     range_max = float(getattr(scan, "range_max", 12.0) or 12.0)
@@ -121,27 +127,34 @@ def scan_to_points(scan) -> Tuple[ScanPoint, ...]:
         cleaned = _clean_range(float(raw), range_min, range_max)
         if cleaned is None:
             continue
-        angle_deg = math.degrees(angle_min + index * angle_increment)
+        angle_deg = math.degrees(angle_min + index * angle_increment) + angle_offset_deg
         points.append(ScanPoint(normalize_angle_deg(angle_deg), cleaned))
     return tuple(points)
 
 
-def _stats_for_points(name: str, values: Iterable[float]) -> SectorStats:
+def _stats_for_points(name: str, values: Iterable[float], robust_percentile: float) -> SectorStats:
     values = list(values)
     if not values:
         return SectorStats(name, None, None, None, 0)
     return SectorStats(
         name=name,
         min_range=min(values),
-        robust_min_range=_percentile(values, 0.10),
+        robust_min_range=_percentile(values, robust_percentile),
         median_range=median(values),
         valid_count=len(values),
     )
 
 
-def extract_sectors(scan, sector_degrees: Dict[str, Tuple[float, float]] = SECTOR_DEGREES) -> SectorMap:
+def extract_sectors(
+    scan,
+    sector_degrees: Dict[str, Tuple[float, float]] = SECTOR_DEGREES,
+    *,
+    angle_offset_deg: float = 0.0,
+    robust_percentile: float = 0.10,
+) -> SectorMap:
     """Build robust min/median distances for each navigation sector."""
-    points = scan_to_points(scan)
+    robust_percentile = max(0.0, min(1.0, float(robust_percentile)))
+    points = scan_to_points(scan, angle_offset_deg=angle_offset_deg)
     sectors: Dict[str, SectorStats] = {}
     for name, (start_deg, end_deg) in sector_degrees.items():
         sector_values = [
@@ -149,7 +162,7 @@ def extract_sectors(scan, sector_degrees: Dict[str, Tuple[float, float]] = SECTO
             for point in points
             if _angle_in_sector(point.angle_deg, start_deg, end_deg)
         ]
-        sectors[name] = _stats_for_points(name, sector_values)
+        sectors[name] = _stats_for_points(name, sector_values, robust_percentile)
 
     return SectorMap(
         sectors=sectors,
@@ -169,17 +182,6 @@ class FreeGap:
     width_deg: float
     score: float
     min_distance_m: float
-
-
-@dataclass(frozen=True)
-class TraversableGap:
-    start_deg: float
-    end_deg: float
-    center_deg: float
-    width_deg: float
-    physical_width_m: float
-    min_distance_m: float
-    score: float
 
 
 def largest_free_gap(
@@ -230,67 +232,3 @@ def largest_free_gap(
         if best is None or candidate.score > best.score:
             best = candidate
     return best
-
-
-def traversable_gaps(
-    points: Sequence[ScanPoint],
-    *,
-    robot_width_m: float,
-    margin_m: float,
-    min_clearance_m: float,
-    search_min_deg: float = -120.0,
-    search_max_deg: float = 120.0,
-) -> Tuple[TraversableGap, ...]:
-    """Segment the scan into physically wide enough gaps for the robot."""
-    required_width = max(0.10, robot_width_m + 2.0 * max(0.0, margin_m))
-    candidates = sorted(
-        (
-            point
-            for point in points
-            if search_min_deg <= point.angle_deg <= search_max_deg
-            and point.distance_m >= min_clearance_m
-        ),
-        key=lambda point: point.angle_deg,
-    )
-    if not candidates:
-        return tuple()
-
-    segments: List[List[ScanPoint]] = []
-    current: List[ScanPoint] = []
-    previous_angle: Optional[float] = None
-    for point in candidates:
-        contiguous = previous_angle is None or abs(point.angle_deg - previous_angle) <= 6.0
-        if contiguous:
-            current.append(point)
-        else:
-            if current:
-                segments.append(current)
-            current = [point]
-        previous_angle = point.angle_deg
-    if current:
-        segments.append(current)
-
-    gaps: List[TraversableGap] = []
-    for segment in segments:
-        start = segment[0].angle_deg
-        end = segment[-1].angle_deg
-        width_deg = abs(end - start)
-        min_distance = min(point.distance_m for point in segment)
-        physical_width = 2.0 * min_distance * math.sin(math.radians(width_deg) * 0.5)
-        if physical_width < required_width:
-            continue
-        center = (start + end) * 0.5
-        forward_bias = max(0.0, 1.0 - abs(center) / max(abs(search_min_deg), abs(search_max_deg), 1.0))
-        score = physical_width * 10.0 + min_distance * 4.0 + forward_bias * 6.0 - abs(center) * 0.02
-        gaps.append(
-            TraversableGap(
-                start_deg=start,
-                end_deg=end,
-                center_deg=center,
-                width_deg=width_deg,
-                physical_width_m=physical_width,
-                min_distance_m=min_distance,
-                score=score,
-            )
-        )
-    return tuple(sorted(gaps, key=lambda gap: gap.score, reverse=True))

@@ -159,22 +159,13 @@ def draw_box(img, box, color, label):
 
 
 def summarize_dataset(data_root):
-    summary = {
-        "root": str(data_root),
-        "splits": {},
-        "class_counts": {name: 0 for name in CLASSES},
-        "source_counts": {},
-    }
+    summary = {"root": str(data_root), "splits": {}, "class_counts": {name: 0 for name in CLASSES}}
     for split in ["train", "val"]:
         imgs = image_files(data_root / "images" / split)
         missing_labels = 0
         label_count = 0
         split_classes = Counter()
-        split_sources = Counter()
         for img in imgs:
-            source_name = img.stem.split("_frame_")[0] if "_frame_" in img.stem else img.stem
-            split_sources[source_name] += 1
-            summary["source_counts"][source_name] = summary["source_counts"].get(source_name, 0) + 1
             labels = read_yolo_label(label_path_for(data_root, img))
             if not labels:
                 missing_labels += 1
@@ -189,7 +180,6 @@ def summarize_dataset(data_root):
             "labels": label_count,
             "missing_label_files_or_empty": missing_labels,
             "class_counts": dict(split_classes),
-            "source_counts": dict(split_sources),
         }
     save_json(DATASET_SUMMARY_PATH, summary)
     record_artifact(DATASET_SUMMARY_PATH)
@@ -255,16 +245,9 @@ def make_qualitative_outputs(model, data_root, sample_count=12):
             by_class[CLASSES[labels[0][0]]].append(image_path)
 
     samples = []
-    inverted_stop = [path for path in val_images if path.stem.startswith("stop-signal-inverted_")]
-    if inverted_stop:
-        pick_count = min(4, len(inverted_stop))
-        idxs = np.linspace(0, len(inverted_stop) - 1, pick_count, dtype=int)
-        samples.extend(inverted_stop[int(i)] for i in idxs)
-
-    seen = set(samples)
     per_class = max(1, sample_count // len(CLASSES))
     for class_name in CLASSES:
-        class_images = [path for path in by_class[class_name] if path not in seen]
+        class_images = by_class[class_name]
         if not class_images:
             continue
         if len(class_images) <= per_class:
@@ -273,8 +256,8 @@ def make_qualitative_outputs(model, data_root, sample_count=12):
             idxs = np.linspace(0, len(class_images) - 1, per_class, dtype=int)
             picks = [class_images[int(i)] for i in idxs]
         samples.extend(picks)
-        seen.update(picks)
 
+    seen = set(samples)
     remaining = [path for path in val_images if path not in seen]
     if len(samples) < sample_count and remaining:
         need = sample_count - len(samples)
@@ -327,7 +310,6 @@ def make_qualitative_outputs(model, data_root, sample_count=12):
         rendered.append(canvas)
         csv_rows.append({
             "image": image_path.name,
-            "source_folder": image_path.stem.split("_frame_")[0] if "_frame_" in image_path.stem else "",
             "gt_class": CLASSES[gt_cls] if gt_cls is not None else "",
             "gt_area_ratio": "" if gt_area_ratio is None else f"{gt_area_ratio:.6f}",
             "pred_class": pred_cls_name,
@@ -338,7 +320,7 @@ def make_qualitative_outputs(model, data_root, sample_count=12):
 
     with PRED_CSV.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()) if csv_rows else [
-            "image", "source_folder", "gt_class", "gt_area_ratio", "pred_class", "pred_conf", "pred_iou_vs_gt", "qualitative_image"
+            "image", "gt_class", "gt_area_ratio", "pred_class", "pred_conf", "pred_iou_vs_gt", "qualitative_image"
         ])
         writer.writeheader()
         writer.writerows(csv_rows)
@@ -442,8 +424,6 @@ def main():
     dataset_summary = summarize_dataset(data_root)
     if dataset_summary["class_counts"].get("meta", 0) <= 0:
         raise RuntimeError(f"Updated dataset source {DATASET_REF} did not include meta labels")
-    if dataset_summary["source_counts"].get("stop-signal-inverted", 0) <= 0:
-        raise RuntimeError(f"Updated dataset source {DATASET_REF} did not include stop-signal-inverted images")
     progress["dataset_summary"] = dataset_summary
     save_progress()
 
@@ -499,7 +479,7 @@ def main():
 
     progress["stage"] = "qualitative_samples"
     save_progress()
-    qualitative_rows = make_qualitative_outputs(trained, data_root, sample_count=20)
+    qualitative_rows = make_qualitative_outputs(trained, data_root, sample_count=16)
     make_quantitative_zip()
     make_qualitative_zip()
 
@@ -509,9 +489,6 @@ def main():
     progress["status"] = "complete"
     progress["metrics"] = metric_data
     progress["qualitative_sample_count"] = len(qualitative_rows)
-    progress["qualitative_inverted_stop_count"] = sum(
-        1 for row in qualitative_rows if row.get("source_folder") == "stop-signal-inverted"
-    )
     save_progress()
 
     pretrained = WORKING / MODEL_NAME

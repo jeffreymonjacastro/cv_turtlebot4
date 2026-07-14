@@ -1,0 +1,1 @@
+{"path": "../../../output/qr_fix_robot/qr_probe_frame.jpg", "expected_payload": "milestone_gamma", "valid": true, "bucket": "real_turtlebot_probe", "angle": "frontal", "distance": "unknown", "lighting": "unknown", "position": "center", "blur": "low", "partial_visibility": "full", "operator_notes": "Small real TurtleBot camera frame used as a smoke fixture."}
