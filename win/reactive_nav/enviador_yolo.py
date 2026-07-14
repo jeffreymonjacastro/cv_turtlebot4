@@ -20,7 +20,7 @@ import time
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = REPO_ROOT / "output" / "signals" / "latest_signal.json"
-DEFAULT_ROBOT = "ubuntu@10.60.199.200"
+DEFAULT_ROBOT = os.environ.get("ROBOT_SSH_TARGET", "robot@robot-hostname")
 DEFAULT_REMOTE_PATH = "/home/ubuntu/output/signals/latest_signal.json"
 DEFAULT_QR_SOURCE = REPO_ROOT / "output" / "signals" / "latest_qr_event.json"
 DEFAULT_QR_REMOTE_PATH = "/home/ubuntu/output/signals/latest_qr_event.json"

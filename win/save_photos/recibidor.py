@@ -6,6 +6,7 @@
 #  - Sirve para crear dataset de entrenamiento YOLO
 # ============================================================
 import base64
+import os
 import socket
 import time
 from pathlib import Path
@@ -13,12 +14,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROBOT_IP = "192.168.0.108"
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = 6000
 
-DESIRED_DOMAIN_ID = 2
-PAIRING_CODE = "ROBOT_A_2"
-EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
+DESIRED_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "2"))
+PAIRING_CODE = os.environ.get("PAIRING_CODE", "ROBOT_PAIRING_CODE")
+EXPECTED_ROBOT_NAME = os.environ.get("ROBOT_NAME", "turtlebot4")
 
 SAVE_INTERVAL_SECONDS = 1.0
 SCAN_PRINT_INTERVAL_SECONDS = 2.0

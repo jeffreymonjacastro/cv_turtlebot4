@@ -12,7 +12,7 @@ The split is intentional:
 Run everything from the repo root:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip

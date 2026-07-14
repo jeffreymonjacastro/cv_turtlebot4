@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -24,11 +25,11 @@ if str(REPO_ROOT) not in sys.path:
 from win.yolo.frame_stream import decode_img_parts, do_handshake
 
 
-DEFAULT_ROBOT_IP = "10.60.199.200"
+DEFAULT_ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 DEFAULT_ROBOT_PORT = 6610
-DESIRED_DOMAIN_ID = 2
-PAIRING_CODE = "ROBOT_A_2"
-EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"
+DESIRED_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "2"))
+PAIRING_CODE = os.environ.get("PAIRING_CODE", "ROBOT_PAIRING_CODE")
+EXPECTED_ROBOT_NAME = os.environ.get("ROBOT_NAME", "turtlebot4")
 
 
 def parse_args() -> argparse.Namespace:

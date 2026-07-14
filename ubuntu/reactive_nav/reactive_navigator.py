@@ -368,8 +368,8 @@ def run_ros_node(args=None) -> None:
 
             self.declare_parameter("telemetry_enabled", True)
             self.declare_parameter("telemetry_port", 6612)
-            self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
-            self.declare_parameter("pairing_code", "ROBOT_A_2")
+            self.declare_parameter("robot_name", "turtlebot4")
+            self.declare_parameter("pairing_code", "ROBOT_PAIRING_CODE")
             self.declare_parameter("diagnostic_period_s", 0.5)
             self.declare_parameter("persistent_log_enabled", True)
             self.declare_parameter("persistent_log_path", "output/reactive_nav_debug.jsonl")

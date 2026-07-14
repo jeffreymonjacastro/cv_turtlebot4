@@ -37,7 +37,7 @@ autonomous run.
 Before starting Terminal B, verify the local `uv` environment can import ZXing:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 uv run python -c "import importlib.metadata, zxingcpp; print(importlib.metadata.version('zxing-cpp'), zxingcpp.__file__)"
 ```
 
@@ -49,7 +49,7 @@ scan fix, is documented in `docs/QR_ZXING_ARCHITECTURE.md`.
 Run on the Mac:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 rsync -av ubuntu/reactive_nav/ turtlebot4:/home/ubuntu/reactive_nav_test/reactive_nav/
 rsync -av docs/AUTONOMOUS_LESS_CONSERVATIVE_RUN.md turtlebot4:/home/ubuntu/reactive_nav_test/docs/AUTONOMOUS_LESS_CONSERVATIVE_RUN.md
 ```
@@ -77,7 +77,7 @@ streams JPEG frames over UDP. It never publishes motion commands.
 ## 2. Laptop Terminal B: Run YOLO + ZXing QR
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(date +%Y%m%d_%H%M%S)_wall_follow_less_conservative_autonomous"
 mkdir -p "output/perception_runs/$RUN_ID"
 
@@ -112,7 +112,7 @@ bbox_center_x_ratio between 0.03 and 0.97
 ## 3. Laptop Terminal C: Sync YOLO and QR to the Robot
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 RUN_ID="$(ls -td output/perception_runs/*_wall_follow_less_conservative_autonomous | head -n 1 | xargs basename)"
 
 uv run python win/reactive_nav/enviador_yolo.py \
@@ -198,7 +198,7 @@ The matching FSM/command evidence is in:
 ## 5. Optional Laptop Diagnostics
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 python3 win/lidar/recibidor.py <robot_ip>
 ```
 
@@ -209,7 +209,7 @@ The navigator sends diagnostics on UDP port `6612`.
 Run on the Mac after the run:
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 mkdir -p output/autonomous_runs
 rsync -av turtlebot4:/home/ubuntu/output/autonomous_runs/ output/autonomous_runs/
 ```
@@ -224,7 +224,7 @@ output/perception_runs/<run_id>/sync.jsonl
 ## 7. Later: Turn/Recovery Replay and Ablation
 
 ```bash
-cd /Users/katharsis/Developer/cv/turtle4
+cd <repo-root>
 
 uv run python scripts/extract_turn_recovery_intervals.py \
   output/autonomous_runs/*wall_follow_less_conservative_autonomous/reactive_nav_debug.jsonl \

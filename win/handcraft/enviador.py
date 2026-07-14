@@ -6,6 +6,7 @@
 #  - Si hay flecha izquierda/derecha estable, ejecuta giro automatico
 # ============================================================
 import json
+import os
 import socket
 import struct
 import time
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import msvcrt
 
-ROBOT_IP = "192.168.0.103"
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = 5007
 
 SEND_HZ = 60

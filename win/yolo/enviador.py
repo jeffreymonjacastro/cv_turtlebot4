@@ -16,7 +16,7 @@ from pathlib import Path
 
 import msvcrt
 
-ROBOT_IP = os.environ.get("ROBOT_IP", "172.31.245.201")
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = int(os.environ.get("ROBOT_PORT", "5007"))
 
 SEND_HZ = 30

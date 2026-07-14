@@ -57,8 +57,8 @@ class FollowTheGapDepth(Node):
         self.declare_parameter("telemetry_hz", 5.0)
         self.declare_parameter("send_scan_array", True)
         self.declare_parameter("scan_array_stride", 1)
-        self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
-        self.declare_parameter("pairing_code", "ROBOT_A_2")
+        self.declare_parameter("robot_name", "turtlebot4")
+        self.declare_parameter("pairing_code", "ROBOT_PAIRING_CODE")
 
         # ---- Retrieve Parameters ----
         g = lambda n: self.get_parameter(n).value

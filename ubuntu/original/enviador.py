@@ -18,8 +18,8 @@ class UdpTelemetryNode(Node):
 
         # ========= Parámetros =========
         self.declare_parameter("port", 6000)
-        self.declare_parameter("robot_name", "turtlebot4_rensso_mora")
-        self.declare_parameter("pairing_code", "ROBOT_A_2")  # debe coincidir con la PC
+        self.declare_parameter("robot_name", "turtlebot4")
+        self.declare_parameter("pairing_code", "ROBOT_PAIRING_CODE")  # debe coincidir con la PC
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("image_topic", "/oakd/rgb/preview/image_raw")
 

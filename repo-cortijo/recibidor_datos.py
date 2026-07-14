@@ -1,17 +1,18 @@
 import socket
 import base64
 import time
+import os
 
 import numpy as np
 import cv2
 
 # ========= Configuración =========
-ROBOT_IP   = "172.27.129.200"  # IP del TurtleBot4
+ROBOT_IP = os.environ.get("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = 6000              # Debe coincidir con el nodo de telemetría
 
-DESIRED_DOMAIN_ID = 2  # Debe coincidir con ROS_DOMAIN_ID del robot
-PAIRING_CODE = "ROBOT_A_2"
-EXPECTED_ROBOT_NAME = "turtlebot4_rensso_mora"  # por seguridad extra
+DESIRED_DOMAIN_ID = int(os.environ.get("ROS_DOMAIN_ID", "2"))
+PAIRING_CODE = os.environ.get("PAIRING_CODE", "ROBOT_PAIRING_CODE")
+EXPECTED_ROBOT_NAME = os.environ.get("ROBOT_NAME", "turtlebot4")
 
 def do_handshake(sock: socket.socket, robot_addr):
     sock.settimeout(1.0)
